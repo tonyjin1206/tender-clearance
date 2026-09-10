@@ -1,0 +1,208 @@
+{
+  "$defs": {
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "bid_document",
+            "procurement_document",
+            "external_evidence",
+            "metadata",
+            "derived"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "document_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "location": {
+          "additionalProperties": true,
+          "description": "定位，如 {\"kind\":\"pdf_page\",\"page\":3}、{\"kind\":\"xlsx_cell\",\"sheet\":\"开标一览表\",\"cell\":\"B2\"}、{\"kind\":\"url\",\"url\":\"...\"}",
+          "title": "Location",
+          "type": "object"
+        },
+        "field": {
+          "description": "字段名，如 uscc / legal_rep_name / phone / producer",
+          "title": "Field",
+          "type": "string"
+        },
+        "raw_value": {
+          "description": "原文摘录；证件号/手机号已脱敏",
+          "title": "Raw Value",
+          "type": "string"
+        },
+        "normalized_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Value"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "来源文件或快照哈希",
+          "title": "Sha256"
+        },
+        "collected_at": {
+          "format": "date-time",
+          "title": "Collected At",
+          "type": "string"
+        },
+        "method": {
+          "description": "提取方法，如 pdf_text_layer / xlsx_cell / image_exif / manual_import",
+          "title": "Method",
+          "type": "string"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "strength": {
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "title": "Strength",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "source_type",
+        "location",
+        "field",
+        "raw_value",
+        "collected_at",
+        "method",
+        "strength"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "evidence"
+  ],
+  "title": "EvidenceFile",
+  "type": "object"
+}

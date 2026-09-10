@@ -1,0 +1,352 @@
+{
+  "$defs": {
+    "ContactItem": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "phone",
+            "email",
+            "address"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "normalized_value": {
+          "title": "Normalized Value",
+          "type": "string"
+        },
+        "raw_masked": {
+          "title": "Raw Masked",
+          "type": "string"
+        },
+        "supplier_id": {
+          "title": "Supplier Id",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "normalized_value",
+        "raw_masked",
+        "supplier_id",
+        "evidence_ids"
+      ],
+      "title": "ContactItem",
+      "type": "object"
+    },
+    "Party": {
+      "additionalProperties": false,
+      "properties": {
+        "party_id": {
+          "title": "Party Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "legal_rep",
+            "bid_agent",
+            "shareholder",
+            "contact",
+            "project_manager"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "id_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "证件号受控摘要（sha256 前 16 位）",
+          "title": "Id Digest"
+        },
+        "id_mask": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id Mask"
+        },
+        "supplier_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supplier Id"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "confirmation": {
+          "default": "unconfirmed",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "unconfirmed"
+          ],
+          "title": "Confirmation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "party_id",
+        "name",
+        "role"
+      ],
+      "title": "Party",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    },
+    "Supplier": {
+      "additionalProperties": false,
+      "properties": {
+        "supplier_id": {
+          "title": "Supplier Id",
+          "type": "string"
+        },
+        "directory_name": {
+          "title": "Directory Name",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "declared_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Declared Name"
+        },
+        "normalized_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized Name"
+        },
+        "name_search_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name Search Key"
+        },
+        "uscc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uscc"
+        },
+        "uscc_status": {
+          "default": "absent",
+          "enum": [
+            "present_valid",
+            "present_invalid_format",
+            "absent"
+          ],
+          "title": "Uscc Status",
+          "type": "string"
+        },
+        "uscc_candidates": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uscc Candidates",
+          "type": "array"
+        },
+        "uscc_evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Uscc Evidence Ids",
+          "type": "array"
+        },
+        "confirmation": {
+          "default": "unconfirmed",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "unconfirmed"
+          ],
+          "title": "Confirmation",
+          "type": "string"
+        },
+        "confirmation_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmation Note"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "supplier_id",
+        "directory_name",
+        "display_name"
+      ],
+      "title": "Supplier",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "suppliers": {
+      "items": {
+        "$ref": "#/$defs/Supplier"
+      },
+      "title": "Suppliers",
+      "type": "array"
+    },
+    "parties": {
+      "items": {
+        "$ref": "#/$defs/Party"
+      },
+      "title": "Parties",
+      "type": "array"
+    },
+    "contacts": {
+      "items": {
+        "$ref": "#/$defs/ContactItem"
+      },
+      "title": "Contacts",
+      "type": "array"
+    },
+    "notes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "suppliers",
+    "parties",
+    "contacts"
+  ],
+  "title": "EntitiesFile",
+  "type": "object"
+}

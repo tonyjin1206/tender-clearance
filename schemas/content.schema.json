@@ -1,0 +1,307 @@
+{
+  "$defs": {
+    "DocumentContent": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "supplier_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supplier Dir"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "text_units": {
+          "default": 0,
+          "title": "Text Units",
+          "type": "integer"
+        },
+        "scanned_pages": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Scanned Pages",
+          "type": "array"
+        },
+        "ocr_pages": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Ocr Pages",
+          "type": "array"
+        },
+        "issues": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Issues",
+          "type": "array"
+        }
+      },
+      "required": [
+        "document_id",
+        "relative_path",
+        "status"
+      ],
+      "title": "DocumentContent",
+      "type": "object"
+    },
+    "ExtractionAnomaly": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Path"
+        },
+        "anomaly": {
+          "title": "Anomaly",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        }
+      },
+      "required": [
+        "anomaly"
+      ],
+      "title": "ExtractionAnomaly",
+      "type": "object"
+    },
+    "FieldRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "supplier_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supplier Dir"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "value_masked": {
+          "description": "展示值；证件号/手机号已脱敏",
+          "title": "Value Masked",
+          "type": "string"
+        },
+        "normalized": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Normalized"
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "证件号受控比对摘要（仅证件字段）",
+          "title": "Digest"
+        },
+        "confidence": {
+          "default": 1.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "location": {
+          "additionalProperties": true,
+          "title": "Location",
+          "type": "object"
+        },
+        "evidence_id": {
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "low_confidence": {
+          "default": false,
+          "title": "Low Confidence",
+          "type": "boolean"
+        },
+        "category": {
+          "default": "bid",
+          "enum": [
+            "bid",
+            "procurement"
+          ],
+          "title": "Category",
+          "type": "string"
+        }
+      },
+      "required": [
+        "document_id",
+        "relative_path",
+        "field",
+        "value_masked",
+        "method",
+        "location",
+        "evidence_id"
+      ],
+      "title": "FieldRecord",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/DocumentContent"
+      },
+      "title": "Documents",
+      "type": "array"
+    },
+    "fields": {
+      "items": {
+        "$ref": "#/$defs/FieldRecord"
+      },
+      "title": "Fields",
+      "type": "array"
+    },
+    "anomalies": {
+      "items": {
+        "$ref": "#/$defs/ExtractionAnomaly"
+      },
+      "title": "Anomalies",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "documents",
+    "fields",
+    "anomalies"
+  ],
+  "title": "ContentFile",
+  "type": "object"
+}

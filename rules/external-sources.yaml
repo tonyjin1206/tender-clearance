@@ -1,0 +1,59 @@
+# 外部查询渠道配置（方案 6.4 / 8.2）
+#
+# 渠道范围（2026-09-09 用户决策）：外部仅保留中国政府采购网，内部仅保留
+# 富奥供应商关系管理平台（SRM）。信用中国、军队采购网、公开工商信息、
+# 司法公开信息四类渠道已移除（其历史探测结论见 references/external-sources.md）。
+#
+# 使用边界：
+# - 只配置正式 API 或允许的公开查询入口；不配置任何用于规避验证码、
+#   登录、限频或技术保护措施的参数；
+# - blocked_indicators：命中即停止自动化查询并标记 blocked；
+# - 未配置 endpoint / 解析规则的渠道，适配器返回 needs_manual_review，
+#   走人工查询 + 证据导入通道（import_external_evidence.py）。
+
+sources:
+  government_procurement:
+    label: 中国政府采购网
+    query_mode: public_web
+    # 用户指定的人工查询入口；若 IP 入口不可达，状态必须记录为 failed/blocked，
+    # 不得用其他站点结果替代，也不得把未查询写成无失信。
+    portal_url: http://219.143.74.201/search/cr/
+    # 2026-09 验证：https://www.ccgp.gov.cn/cr/list 为“政府采购严重违法失信行为
+    # 记录名单”的免登录公开查询表单（POST orgName/orgCode/enforceUnit/punishTime/
+    # punishTimeMax/gp 页码）；无命中时页面明示“没有该企业的相关记录”。
+    # 无验证码、无登录、无签名头；限速保守（≥5 秒），仅查询本项目供应商主体。
+    endpoint: https://www.ccgp.gov.cn/cr/list
+    requires_credentials: false
+    method: POST
+    params_name: orgName
+    params_uscc: orgCode
+    form_fields:
+      orgName: "{name}"
+      orgCode: "{uscc}"
+      enforceUnit: ""
+      punishTime: ""
+      punishTimeMax: ""
+    page_param: gp
+    pages: 1
+    response_type: html_table
+    row_pattern: '<tr class="trShow">(.*?)</tr>'
+    field_map: ["序号", "企业名称", "统一社会信用代码", "企业地址", "行为情形",
+                "处罚结果", "处罚依据", "处罚日期", "公布日期", "执法单位"]
+    blocked_indicators: ["captcha", "验证码", "请登录", "访问频率"]
+    no_match_marker: "没有该企业的相关记录"
+    rate_limit_seconds: 5.0
+    note: 自动化已启用（匿名公开查询表单）。主体以 orgCode（统一社会信用代码）优先；
+      仅名称查询时命中记录为候选，不自动归属。禁入期限载于“处罚结果”文本，
+      有效期判断需人工核对处罚决定原文。
+
+  srm:
+    label: 富奥SRM（用友 YonBIP，内网）
+    query_mode: none
+    portal_url: https://yonbip.fawer.com.cn/#/
+    endpoint: null
+    requires_credentials: true
+    note: >
+      内网系统：浏览器会话模式已端到端验证（scripts/tc/srm_playwright_driver.py，
+      默认无头后台；用户在对话中提供账号密码，仅本次会话内存使用，绝不写入
+      Skill、配置、输出或日志；也可改用授权导出文件放入
+      external-evidence/srm-authorized-export/）。

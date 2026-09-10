@@ -1,0 +1,4 @@
+interface:
+  display_name: "投标清标"
+  short_description: "汇总同一项目多家标书交叉检查，生成三级预警清标报告"
+  default_prompt: "请提供：1) 项目目录（含 project.yaml 与 bids/供应商目录）；2) 投标截止时间；3) 采购文件中的资格/否决条款来源；4) 外部查询方式（offline 离线 / manual_import 仅证据导入 / live 指定渠道）。公开渠道（信用中国、政府采购网、军队采购网）无需账号密码；富奥 SRM 为内网系统，如需在线访问请在会话中提供账号密码（仅本次内存使用），或直接提供授权导出文件放入 external-evidence/srm-authorized-export/。"

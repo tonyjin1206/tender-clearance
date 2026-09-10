@@ -1,0 +1,480 @@
+{
+  "$defs": {
+    "ExternalQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "query_id": {
+          "title": "Query Id",
+          "type": "string"
+        },
+        "source_id": {
+          "enum": [
+            "government_procurement",
+            "srm"
+          ],
+          "title": "Source Id",
+          "type": "string"
+        },
+        "subject_supplier_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject Supplier Id"
+        },
+        "subject_key": {
+          "additionalProperties": true,
+          "description": "主体键，如 {\"uscc\": \"...\"} 或 {\"name\": \"...\"}",
+          "title": "Subject Key",
+          "type": "object"
+        },
+        "query_mode": {
+          "enum": [
+            "official_api",
+            "browser_session",
+            "public_web",
+            "manual_import",
+            "none"
+          ],
+          "title": "Query Mode",
+          "type": "string"
+        },
+        "queried_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Queried At"
+        },
+        "status": {
+          "enum": [
+            "match",
+            "no_match_verified",
+            "no_result",
+            "not_queried",
+            "blocked",
+            "failed",
+            "needs_manual_review"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "record_count": {
+          "default": 0,
+          "title": "Record Count",
+          "type": "integer"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "adapter_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adapter Version"
+        }
+      },
+      "required": [
+        "query_id",
+        "source_id",
+        "subject_key",
+        "query_mode",
+        "status"
+      ],
+      "title": "ExternalQuery",
+      "type": "object"
+    },
+    "ExternalRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "source_id": {
+          "enum": [
+            "government_procurement",
+            "srm"
+          ],
+          "title": "Source Id",
+          "type": "string"
+        },
+        "supplier_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supplier Id"
+        },
+        "subject_confirmation": {
+          "default": "unconfirmed",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "unconfirmed"
+          ],
+          "title": "Subject Confirmation",
+          "type": "string"
+        },
+        "subject_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject Name"
+        },
+        "subject_uscc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject Uscc"
+        },
+        "record_kind": {
+          "enum": [
+            "dishonesty",
+            "penalty",
+            "judicial_case",
+            "ownership",
+            "registration",
+            "judicial_summary",
+            "operating_risk",
+            "operating_summary",
+            "other"
+          ],
+          "title": "Record Kind",
+          "type": "string"
+        },
+        "fields": {
+          "additionalProperties": true,
+          "description": "原始记录字段，如案号/处罚决定文号/当事人/日期/禁入期限等",
+          "title": "Fields",
+          "type": "object"
+        },
+        "effective_from": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effective From"
+        },
+        "effective_to": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effective To"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "record_id",
+        "source_id",
+        "record_kind",
+        "fields"
+      ],
+      "title": "ExternalRecord",
+      "type": "object"
+    },
+    "OwnershipRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "relation_id": {
+          "title": "Relation Id",
+          "type": "string"
+        },
+        "from_party_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Party Name"
+        },
+        "from_party_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Party Digest"
+        },
+        "from_company_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Company Name"
+        },
+        "from_company_uscc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From Company Uscc"
+        },
+        "to_company_name": {
+          "title": "To Company Name",
+          "type": "string"
+        },
+        "to_company_uscc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To Company Uscc"
+        },
+        "share_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Share Ratio"
+        },
+        "relation_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relation Date"
+        },
+        "relation_end_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relation End Date"
+        },
+        "supplier_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Supplier Id"
+        },
+        "subject_confirmation": {
+          "default": "unconfirmed",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "unconfirmed"
+          ],
+          "title": "Subject Confirmation",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "relation_id",
+        "to_company_name"
+      ],
+      "title": "OwnershipRelation",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "queries": {
+      "items": {
+        "$ref": "#/$defs/ExternalQuery"
+      },
+      "title": "Queries",
+      "type": "array"
+    },
+    "records": {
+      "items": {
+        "$ref": "#/$defs/ExternalRecord"
+      },
+      "title": "Records",
+      "type": "array"
+    },
+    "ownership": {
+      "items": {
+        "$ref": "#/$defs/OwnershipRelation"
+      },
+      "title": "Ownership",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "queries",
+    "records"
+  ],
+  "title": "ExternalEvidenceFile",
+  "type": "object"
+}

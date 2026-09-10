@@ -1,0 +1,286 @@
+{
+  "$defs": {
+    "CoverageEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "supplier_id": {
+          "title": "Supplier Id",
+          "type": "string"
+        },
+        "source_id": {
+          "enum": [
+            "government_procurement",
+            "srm"
+          ],
+          "title": "Source Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "match",
+            "no_match_verified",
+            "no_result",
+            "not_queried",
+            "blocked",
+            "failed",
+            "needs_manual_review"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "query_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query Id"
+        }
+      },
+      "required": [
+        "supplier_id",
+        "source_id",
+        "status"
+      ],
+      "title": "CoverageEntry",
+      "type": "object"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "title": "Finding Id",
+          "type": "string"
+        },
+        "rule_id": {
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "domain": {
+          "enum": [
+            "identity",
+            "metadata",
+            "ownership",
+            "judicial",
+            "dishonesty",
+            "coverage"
+          ],
+          "title": "Domain",
+          "type": "string"
+        },
+        "level": {
+          "enum": [
+            "I",
+            "II",
+            "III"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "evidence_strength": {
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D"
+          ],
+          "title": "Evidence Strength",
+          "type": "string"
+        },
+        "supplier_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supplier Ids",
+          "type": "array"
+        },
+        "subject_confirmation": {
+          "default": "confirmed",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "unconfirmed"
+          ],
+          "title": "Subject Confirmation",
+          "type": "string"
+        },
+        "fact": {
+          "description": "发现事实（脱敏、中性表述，不作违法/串标认定）",
+          "title": "Fact",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "related_ids": {
+          "description": "关联的 match_id / query_id / record_id",
+          "items": {
+            "type": "string"
+          },
+          "title": "Related Ids",
+          "type": "array"
+        },
+        "status": {
+          "default": "open",
+          "enum": [
+            "open",
+            "human_review_required",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "recommendation": {
+          "default": "",
+          "description": "建议复核动作",
+          "title": "Recommendation",
+          "type": "string"
+        },
+        "procurement_clause_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "与采购文件资格条款的匹配结果；无条款时为“资格影响待采购人确认”",
+          "title": "Procurement Clause Note"
+        },
+        "missing_materials": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Materials",
+          "type": "array"
+        }
+      },
+      "required": [
+        "finding_id",
+        "rule_id",
+        "rules_version",
+        "domain",
+        "level",
+        "evidence_strength",
+        "fact"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "coverage": {
+      "items": {
+        "$ref": "#/$defs/CoverageEntry"
+      },
+      "title": "Coverage",
+      "type": "array"
+    },
+    "human_review_queue": {
+      "description": "必须人工复核的 finding_id",
+      "items": {
+        "type": "string"
+      },
+      "title": "Human Review Queue",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "findings",
+    "coverage"
+  ],
+  "title": "FindingsFile",
+  "type": "object"
+}

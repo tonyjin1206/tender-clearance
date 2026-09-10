@@ -1,0 +1,75 @@
+# 富奥 SRM（用友 YonBIP）实时查询配置 —— P5 联调
+#
+# 依据：用户提供的《获取企业信息》API 说明（发布 2025-07-02）：
+#   POST /yonbip/cpu/tenant/query?access_token=访问令牌   ContentType: application/json
+#   返回 {code:"200", message, data:[...]}；错误码 201/203(系统错误)/204(权限问题)
+#   data[] 字段：enterpriseName, tradeName[], provinceName, cityName, address,
+#     bsCode(工商代码), bsName, bsRegisterTime, legalRepName, legalRepMobile,
+#     supplierLevel[], platRegisterTime, tenantId
+#
+# 待联调确认（联调清单）：
+# 1. 获取 token 的接口与凭据形式（规范引用“获取token”章节；YonBIP 开放 API 常见为
+#    /iuap-api-auth/open-auth/selfAppAuth/getAccessToken，body {appKey, appSecret}；
+#    若贵方是用户名/密码换 token，请按实际接口修改 auth.path/payload）
+# 2. 本 API 是否支持按企业名称/统一社会信用代码过滤的入参（规范未列请求体参数）；
+#    若不支持，适配器将拉取记录后按 match_fields 在本地过滤
+# 3. base_url 是否即为 https://yonbip.fawer.com.cn（规范提到的“动态域名”针对 SaaS，
+#    私有化部署应为固定域名，待验证）
+#
+# 隐私约定：legalRepMobile（法代手机）为个人敏感信息，默认不采集（不列入 field_map）；
+# 如业务确需，必须先脱敏（掩码）再加入。
+#
+# 凭据运行时提供（仅内存，绝不写入文件/日志）：
+#   export SRM_USER=<账号或appKey>
+#   export SRM_PASSWORD=<密码或appSecret>
+
+srm:
+  base_url: https://yonbip.fawer.com.cn
+
+  auth:
+    mode: token_post
+    # 2026-09-09 实测：GET /iuap-api-auth/open-auth/selfAppAuth/getAccessToken
+    # 存在，缺参时提示 "Required request parameter 'appKey' ..." —— 参数为
+    # appKey/appSecret（camelCase，query 传递）。
+    method: get
+    path: /iuap-api-auth/open-auth/selfAppAuth/getAccessToken
+    query_template:
+      appKey: "{username}"
+      appSecret: "{password}"
+      timestamp: ""
+    token_json_path: data.access_token
+    token_query:                 # 规范：access_token 走 query 参数
+      access_token: "{token}"
+    token_header: {}
+    extra_headers: {}
+    body_code_path: code
+    body_ok_codes: ["200"]
+    body_blocked_codes: ["204"]  # 权限问题 → blocked；203 系统错误 → failed
+    blocked_indicators: ["captcha", "验证码", "请登录", "权限不足"]
+    rate_limit_seconds: 3.0
+
+  queries:
+    supplier:                    # 获取企业信息（采购商/供应商档案）
+      path: /yonbip/cpu/tenant/query
+      method: POST
+      payload_template: {}       # 规范未定义请求体；若支持过滤入参请在此填 {uscc}/{name}
+      records_json_path: data
+      body_code_path: code
+      body_ok_codes: ["200"]
+      body_blocked_codes: ["204"]
+      match_fields: ["统一社会信用代码", "企业名称"]   # 本地按主体键过滤
+      field_map:
+        enterpriseName: 企业名称
+        bsCode: 统一社会信用代码
+        bsName: 工商名称
+        address: 企业地址
+        provinceName: 省份
+        cityName: 城市
+        tradeName: 行业大类
+        bsRegisterTime: 工商注册时间
+        legalRepName: 法定代表人
+        # legalRepMobile: 法定代表人手机   # 敏感：默认不采集
+        supplierLevel: 供应商等级
+        platRegisterTime: 平台入驻时间
+        tenantId: 租户ID
+      record_kind: registration

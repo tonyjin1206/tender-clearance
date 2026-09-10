@@ -1,0 +1,266 @@
+{
+  "$defs": {
+    "DocumentRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "relative_path": {
+          "description": "相对项目根目录的 POSIX 路径",
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "supplier_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "位于 bids/ 下时的供应商目录名",
+          "title": "Supplier Dir"
+        },
+        "category": {
+          "enum": [
+            "bid",
+            "procurement",
+            "external_evidence",
+            "other"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "bid_subtype": {
+          "default": "unknown",
+          "enum": [
+            "business",
+            "technical",
+            "bid_schedule",
+            "cover",
+            "unknown"
+          ],
+          "title": "Bid Subtype",
+          "type": "string"
+        },
+        "media_type": {
+          "title": "Media Type",
+          "type": "string"
+        },
+        "size_bytes": {
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "page_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page Count"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "extraction_status": {
+          "default": "ok",
+          "enum": [
+            "ok",
+            "partial",
+            "failed",
+            "skipped",
+            "password_protected",
+            "corrupt",
+            "unsupported",
+            "empty"
+          ],
+          "title": "Extraction Status",
+          "type": "string"
+        },
+        "status_detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status Detail"
+        },
+        "modified_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "文件系统修改时间；不能单独证明文档创作时间",
+          "title": "Modified At"
+        }
+      },
+      "required": [
+        "document_id",
+        "relative_path",
+        "category",
+        "media_type",
+        "size_bytes",
+        "sha256"
+      ],
+      "title": "DocumentRecord",
+      "type": "object"
+    },
+    "ExtractionAnomaly": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Path"
+        },
+        "anomaly": {
+          "title": "Anomaly",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        }
+      },
+      "required": [
+        "anomaly"
+      ],
+      "title": "ExtractionAnomaly",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/DocumentRecord"
+      },
+      "title": "Documents",
+      "type": "array"
+    },
+    "anomalies": {
+      "items": {
+        "$ref": "#/$defs/ExtractionAnomaly"
+      },
+      "title": "Anomalies",
+      "type": "array"
+    },
+    "supplier_dirs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Supplier Dirs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "documents",
+    "anomalies"
+  ],
+  "title": "InventoryFile",
+  "type": "object"
+}

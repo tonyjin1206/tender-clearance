@@ -1,0 +1,27 @@
+[project]
+name = "tender-clearance"
+version = "0.1.0"
+description = "投标清标 Skill：多家标书交叉检查、外部证据导入与三级预警清标报告"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "jinja2>=3.1",
+    "pydantic>=2.7",
+    "PyYAML>=6.0",
+    "jsonschema>=4.21",
+    "pymupdf>=1.24",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "Pillow>=10.0",
+    "requests>=2.31",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.optional-dependencies]
+ocr = ["paddleocr>=3.0", "paddlepaddle>=3.0"]

@@ -1,0 +1,222 @@
+{
+  "$defs": {
+    "DocumentMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "relative_path": {
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/MetadataField"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "page_image_fingerprints": {
+          "description": "扫描页图像感知哈希（ahash），仅作线索",
+          "items": {
+            "type": "string"
+          },
+          "title": "Page Image Fingerprints",
+          "type": "array"
+        }
+      },
+      "required": [
+        "document_id",
+        "relative_path",
+        "fields"
+      ],
+      "title": "DocumentMetadata",
+      "type": "object"
+    },
+    "ExtractionAnomaly": {
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Id"
+        },
+        "relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Path"
+        },
+        "anomaly": {
+          "title": "Anomaly",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        }
+      },
+      "required": [
+        "anomaly"
+      ],
+      "title": "ExtractionAnomaly",
+      "type": "object"
+    },
+    "MetadataField": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "raw_value": {
+          "title": "Raw Value",
+          "type": "string"
+        },
+        "info_class": {
+          "enum": [
+            "unique_id",
+            "limited_identifying",
+            "common_or_modifiable"
+          ],
+          "title": "Info Class",
+          "type": "string"
+        },
+        "evidence_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Id"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "field",
+        "raw_value",
+        "info_class"
+      ],
+      "title": "MetadataField",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "脱敏模式；当前固定 standard",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "documents": {
+      "items": {
+        "$ref": "#/$defs/DocumentMetadata"
+      },
+      "title": "Documents",
+      "type": "array"
+    },
+    "anomalies": {
+      "items": {
+        "$ref": "#/$defs/ExtractionAnomaly"
+      },
+      "title": "Anomalies",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "documents"
+  ],
+  "title": "MetadataFile",
+  "type": "object"
+}

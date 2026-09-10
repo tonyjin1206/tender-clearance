@@ -1,0 +1,124 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "project_name": {
+      "title": "Project Name",
+      "type": "string"
+    },
+    "bid_deadline": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "投标截止时间；判断处罚/禁入是否处于有效期的唯一时间基准",
+      "title": "Bid Deadline"
+    },
+    "run_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Date"
+    },
+    "supplier_directory_mapping": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "bids/ 下供应商目录名 → 报告用显示名（可选）",
+      "title": "Supplier Directory Mapping",
+      "type": "object"
+    },
+    "procurement_rules_source": {
+      "default": "unspecified",
+      "description": "资格/否决条款来源（文件相对路径或 unspecified）",
+      "title": "Procurement Rules Source",
+      "type": "string"
+    },
+    "procurement_clauses_mapping": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "已确认的条款映射 YAML（项目根相对路径）；存在时命中的外部风险发现自动附对应条款引用（仅注释，不改变等级）",
+      "title": "Procurement Clauses Mapping"
+    },
+    "external_query_mode": {
+      "default": "offline",
+      "description": "offline：不做任何外部访问；manual_import：仅导入证据；live：允许已启用适配器访问（需授权）",
+      "enum": [
+        "offline",
+        "manual_import",
+        "live"
+      ],
+      "title": "External Query Mode",
+      "type": "string"
+    },
+    "external_query_sources": {
+      "description": "live 模式下明确启用的渠道；缺省为空，即全部 not_queried",
+      "items": {
+        "enum": [
+          "government_procurement",
+          "srm"
+        ],
+        "type": "string"
+      },
+      "title": "External Query Sources",
+      "type": "array"
+    },
+    "redaction_mode": {
+      "const": "standard",
+      "default": "standard",
+      "title": "Redaction Mode",
+      "type": "string"
+    },
+    "retention_policy": {
+      "default": "project_local",
+      "title": "Retention Policy",
+      "type": "string"
+    },
+    "id_digest_salt": {
+      "default": "tender-clearance-default-salt-v1",
+      "description": "证件号受控摘要盐；不写入任何输出（只写指纹）",
+      "title": "Id Digest Salt",
+      "type": "string"
+    },
+    "ocr_provider": {
+      "default": "none",
+      "description": "OCR 适配器；none 时扫描页进入人工核对；paddle 需安装 paddleocr/paddlepaddle（可选依赖），OCR 字段走低置信度通道",
+      "enum": [
+        "none",
+        "mock",
+        "paddle"
+      ],
+      "title": "Ocr Provider",
+      "type": "string"
+    }
+  },
+  "required": [
+    "project_id",
+    "project_name"
+  ],
+  "title": "ProjectConfig",
+  "type": "object"
+}
