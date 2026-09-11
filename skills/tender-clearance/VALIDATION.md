@@ -36,6 +36,7 @@
 | 单元与场景测试 | `.venv/bin/python -m pytest tests -q` | ✅ **94 passed**，5 个环境弃用警告 |
 | 运行前预检 | `.venv/bin/python scripts/preflight.py tests/fixtures/project-alpha --profile report` | ✅ 只读输出 23 个输入文件；技术标 4 个按文件名跳过；无缺失 Core 依赖 |
 | 锁文件一致性 | `uv lock --check` | ✅ 41 个包，已移除未使用的 `pypdf` |
+| 干净虚构夹具完整流水线 | `run_all(require_srm=False)` + `/usr/bin/time -p` | ✅ 冷运行 1.15s、热运行 0.99s；仅代表当前 macOS 夹具，不宣称生产 p95 |
 | Core 依赖静态检查 | 检查基础 dependencies / `requirements-core.txt` | ✅ 无 `paddle*`、OpenCV、Playwright、requests |
 | Core OCR 调用检查 | `parsers.py`、`extract_content.py`、`pipeline.py` | ✅ 无 Paddle/模型调用；仅 mock 夹具可读 XMP |
 | 有效项目验证 | `validate_project.py <alpha副本> --stage final` | ✅ exit 0 |
