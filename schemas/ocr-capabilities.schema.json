@@ -1,0 +1,145 @@
+{
+  "$defs": {
+    "OCRCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "ocr.capabilities.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "provider_version": {
+          "title": "Provider Version",
+          "type": "string"
+        },
+        "processing_location": {
+          "enum": [
+            "local",
+            "cloud"
+          ],
+          "title": "Processing Location",
+          "type": "string"
+        },
+        "input_formats": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Input Formats",
+          "type": "array"
+        },
+        "max_pages": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Pages"
+        },
+        "max_file_size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max File Size Bytes"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "returns_confidence": {
+          "title": "Returns Confidence",
+          "type": "boolean"
+        },
+        "returns_block_coordinates": {
+          "title": "Returns Block Coordinates",
+          "type": "boolean"
+        },
+        "model_names": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Model Names",
+          "type": "array"
+        },
+        "inference_engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inference Engine"
+        },
+        "location_precision": {
+          "default": "page_only",
+          "enum": [
+            "block",
+            "page_only"
+          ],
+          "title": "Location Precision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_version",
+        "provider_id",
+        "provider_version",
+        "processing_location",
+        "returns_confidence",
+        "returns_block_coordinates"
+      ],
+      "title": "OCRCapabilities",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/OCRCapabilities"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "rejection_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Rejection Reasons",
+      "type": "array"
+    }
+  },
+  "required": [
+    "capabilities",
+    "checked_at",
+    "accepted"
+  ],
+  "title": "OCRCapabilitiesFile",
+  "type": "object"
+}

@@ -25,11 +25,15 @@ import typer
 import yaml
 
 from tc.projio import REQUIRED_PROJECT_FIELDS, ProjectError
+from tc.models import EntitiesFile, ExternalEvidenceFile
+from tc.srm_gate import SrmReportGateError, validate_srm_report_gate
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 INTERIM_FILES = {
     "inventory.json": "inventory.schema.json",
     "content.json": "content.schema.json",
+    "ocr-jobs.json": "ocr-job.schema.json",
+    "ocr-results.json": "ocr-result.schema.json",
     "entities.json": "supplier.schema.json",
     "matches.json": "matches.schema.json",
     "metadata.json": "metadata.schema.json",
@@ -109,6 +113,14 @@ def run(
                     problems.append(Problem(f"output/interim/{name}", "缺少产物（final 模式要求全部存在）"))
                 continue
             validate_schema_file(load_json_file(path), SCHEMA_DIR / schema_name, problems, f"output/interim/{name}")
+
+    if stage == "final" and not problems:
+        try:
+            entities = EntitiesFile(**load_json_file(project_dir / "output/interim/entities.json"))
+            external = ExternalEvidenceFile(**load_json_file(project_dir / "output/interim/external.json"))
+            validate_srm_report_gate(entities, external)
+        except SrmReportGateError as exc:
+            problems.append(Problem("output/interim/external.json", str(exc)))
 
     if problems:
         typer.secho(f"[FAIL] 项目校验未通过（{len(problems)} 个问题）：", fg=typer.colors.RED, err=True)

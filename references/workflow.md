@@ -4,10 +4,11 @@
 
 ```mermaid
 flowchart TD
-    A[创建项目清单与文件哈希] --> B[分类并提取标书内容与属性]
+    P[只读预检并一次性确认] --> A[创建项目清单与文件哈希]
+    A --> B[分类并提取标书内容与属性]
     B --> C[形成供应商及人员候选实体]
     C --> D[交叉匹配与属性同源线索]
-    C --> E[公开/授权外部证据查询或导入]
+    C --> E[登录 SRM 并按名称+统一社会信用代码查询；导入其他外部证据]
     D --> F[规则引擎：发现、证据强度、三级预警]
     E --> F
     F --> G[人工复核队列与覆盖情况]
@@ -18,19 +19,26 @@ flowchart TD
 
 | 阶段 | 脚本 | 输入 | 输出（output/interim/） |
 |---|---|---|---|
+| 预检 | `preflight.py` | 项目目录、当前环境 | JSON 计划、缺失依赖、确认项（不安装、不联网） |
 | 盘点 | `inventory.py` | 项目目录 | `inventory.json` |
-| 内容提取 | `extract_content.py` | inventory | `content.json` + `evidence-content.json` + `low_confidence.json` |
-| 属性提取 | `extract_metadata.py` | inventory | `metadata.json` + `evidence-metadata.json` |
+| 一次性文档解析 | `extract_documents.py`（内部调用 content/metadata） | inventory | `content.json`、`metadata.json`、`ocr-jobs.json`、文档缓存 |
+| OCR 导入 | `import_ocr_results.py` | `ocr-job.v1` + 宿主 `ocr-result.v1` | `ocr-results.json`、OCR 缓存、重建后的 `content.json` |
 | 主体与匹配 | `normalize_and_match.py` | content | `entities.json` + `matches.json` |
 | 外部导入 | `import_external_evidence.py` | external-evidence/ | `external.json` + `evidence-external.json` |
-| 外部查询 | `query_sources.py` | entities + external | 合并入 `external.json`（+`evidence-external-queries.json`） |
+| 外部刷新（报告前置） | `query_sources.py` | entities + 用户本次提供的 SRM 凭据 + 明确启用渠道 | 合并入 `external.json`（+`evidence-external-queries.json`）；SRM 登录成功但无结果为 `no_result` |
 | 规则评估 | `assess_risk.py` | 全部中间产物 | `findings.json`（含 coverage、人工复核队列） |
-| 渲染 | `render_report.py` | 全部中间产物 | `output/清标报告.md`、`清标结果.json`、`证据索引.csv`、`人工复核清单.csv`（可选 DOCX） |
+| 渲染 | `render_report.py --profile report/review/workpaper` | 全部中间产物与缓存 | 根目录验收基准 + `output/exports/<profile>/` |
 | 校验 | `validate_project.py` | 项目目录 | 结构校验结果（exit 0/1） |
 
 顺序不可颠倒：每个阶段只依赖前序产物的 JSON Schema（`schemas/`）。
 可重复运行：所有 ID 由内容派生（`EV-`/`DOC-`/`MT-`/`Q-`/`R-`/`FD-`），
 同一输入与规则版本连续运行两次，除运行标识与时间字段外结果逐字段一致。
+
+预检必须先于依赖安装和正式流水线：宿主先展示 JSON 计划，集中确认运行范围、缺失依赖、
+OCR Provider 和 SRM 授权；确认后一次性安装获准依赖，后续阶段不临时提问。技术标按文件名
+短路正文、表格、媒体和 OCR，只保留盘点与轻量属性。文档缓存以源 SHA 复用底层解析快照，
+但内容/属性结果还校验文档身份、文件名分类、脱敏模式和 Provider 配置，避免同内容副本
+串用证据路径。
 
 ## 关键规则
 
@@ -58,8 +66,9 @@ flowchart TD
    - 证据强度 D（自动推断/待确认）≤ III 级；
    - 主体未确认（candidate/unconfirmed）≤ III 级；
    - 仅名称模糊匹配的关联 ≤ III 级。
-6. **低置信度**（OCR 置信度 < 0.85 或 mock OCR）字段：不参与精确匹配，只进人工核对（T09）。
-7. **验证后再报告**：正式交付前运行 `validate_project.py --stage final`。
+6. **低置信度**（OCR 置信度 < 0.85、无坐标或 page-only）字段：不参与精确匹配，只进人工核对（T09）。
+7. **SRM 门禁后再报告**：正式报告必须通过 SRM 登录/查询门禁；`no_result` 可通过，
+   `not_queried`、`needs_manual_review`、`blocked`、`failed` 不可通过。
 
 ## 黑盒试跑（验收）
 

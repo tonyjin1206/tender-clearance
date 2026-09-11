@@ -1,97 +1,79 @@
 {
   "$defs": {
-    "CrossMatch": {
+    "OCRJob": {
       "additionalProperties": false,
       "properties": {
-        "match_id": {
-          "title": "Match Id",
+        "contract_version": {
+          "const": "ocr-job.v1",
+          "title": "Contract Version",
           "type": "string"
         },
-        "field": {
-          "enum": [
-            "uscc",
-            "legal_rep_id_digest",
-            "bid_agent_id_digest",
-            "legal_rep_name",
-            "bid_agent_name",
-            "shareholder_name",
-            "phone",
-            "email",
-            "contact_name",
-            "address",
-            "company_name"
-          ],
-          "title": "Field",
+        "job_id": {
+          "title": "Job Id",
           "type": "string"
         },
-        "supplier_a": {
-          "title": "Supplier A",
+        "document_id": {
+          "title": "Document Id",
           "type": "string"
         },
-        "supplier_b": {
-          "title": "Supplier B",
+        "source_sha256": {
+          "title": "Source Sha256",
           "type": "string"
         },
-        "match_type": {
-          "enum": [
-            "exact",
-            "fuzzy",
-            "candidate"
-          ],
-          "title": "Match Type",
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "page_image_sha256": {
+          "title": "Page Image Sha256",
           "type": "string"
         },
-        "value_a": {
-          "description": "脱敏后的比对值",
-          "title": "Value A",
+        "input_ref": {
+          "title": "Input Ref",
           "type": "string"
         },
-        "value_b": {
-          "title": "Value B",
-          "type": "string"
-        },
-        "similarity": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Similarity"
-        },
-        "evidence_ids": {
+        "languages": {
           "items": {
             "type": "string"
           },
-          "title": "Evidence Ids",
+          "title": "Languages",
           "type": "array"
         },
-        "note": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+        "mode": {
+          "default": "accurate",
+          "enum": [
+            "fast",
+            "accurate"
           ],
-          "default": null,
-          "title": "Note"
+          "title": "Mode",
+          "type": "string"
+        },
+        "purpose": {
+          "default": "tender_clearance_field_candidates",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "privacy_requirement": {
+          "default": "local_only",
+          "enum": [
+            "local_only",
+            "user_approved_cloud"
+          ],
+          "title": "Privacy Requirement",
+          "type": "string"
         }
       },
       "required": [
-        "match_id",
-        "field",
-        "supplier_a",
-        "supplier_b",
-        "match_type",
-        "value_a",
-        "value_b"
+        "contract_version",
+        "job_id",
+        "document_id",
+        "source_sha256",
+        "page",
+        "page_image_sha256",
+        "input_ref"
       ],
-      "title": "CrossMatch",
+      "title": "OCRJob",
       "type": "object"
     },
     "RunInfo": {
@@ -154,18 +136,18 @@
     "run": {
       "$ref": "#/$defs/RunInfo"
     },
-    "matches": {
+    "jobs": {
       "items": {
-        "$ref": "#/$defs/CrossMatch"
+        "$ref": "#/$defs/OCRJob"
       },
-      "title": "Matches",
+      "title": "Jobs",
       "type": "array"
     }
   },
   "required": [
     "run",
-    "matches"
+    "jobs"
   ],
-  "title": "MatchesFile",
+  "title": "OCRJobFile",
   "type": "object"
 }

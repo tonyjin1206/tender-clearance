@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # 公共枚举 -------------------------------------------------------------------
 
@@ -48,7 +48,7 @@ class RunInfo(_Strict):
     rules_version: str
     python_version: str
     project_id: str
-    redaction_mode: str = Field(description="脱敏模式；当前固定 standard")
+    redaction_mode: str = Field(description="输出模式：none 表示按项目授权展示原值，standard 表示脱敏")
     id_digest_salt_fingerprint: str = Field(
         description="证件摘要盐的指纹（sha256 前 8 位），不保存盐本身"
     )
@@ -86,17 +86,16 @@ class ProjectConfig(_Strict):
         default_factory=list,
         description="live 模式下明确启用的渠道；缺省为空，即全部 not_queried",
     )
-    redaction_mode: Literal["standard"] = "standard"
+    redaction_mode: Literal["none", "standard"] = "none"
     retention_policy: str = Field(default="project_local")
     id_digest_salt: str = Field(
         default="tender-clearance-default-salt-v1",
         description="证件号受控摘要盐；不写入任何输出（只写指纹）",
         exclude=True,
     )
-    ocr_provider: Literal["none", "mock", "paddle"] = Field(
+    ocr_provider: Literal["none", "mock"] = Field(
         default="none",
-        description="OCR 适配器；none 时扫描页进入人工核对；paddle 需安装 "
-                    "paddleocr/paddlepaddle（可选依赖），OCR 字段走低置信度通道",
+        description="仅用于 none 或测试 mock；生产 OCR 由宿主 Agent 通过 OCR 契约提供",
     )
 
 
@@ -158,7 +157,7 @@ class Evidence(_Strict):
         description='定位，如 {"kind":"pdf_page","page":3}、{"kind":"xlsx_cell","sheet":"开标一览表","cell":"B2"}、{"kind":"url","url":"..."}',
     )
     field: str = Field(description="字段名，如 uscc / legal_rep_name / phone / producer")
-    raw_value: str = Field(description="原文摘录；证件号/手机号已脱敏")
+    raw_value: str = Field(description="原文摘录；是否脱敏由 project.yaml 的 redaction_mode 决定")
     normalized_value: str | None = None
     sha256: str | None = Field(default=None, description="来源文件或快照哈希")
     collected_at: datetime
@@ -228,7 +227,7 @@ class FieldRecord(_Strict):
     relative_path: str
     supplier_dir: str | None = None
     field: str
-    value_masked: str = Field(description="展示值；证件号/手机号已脱敏")
+    value_masked: str = Field(description="展示值；字段名沿用历史兼容命名，是否脱敏由 project.yaml 决定")
     normalized: str | None = None
     digest: str | None = Field(default=None, description="证件号受控比对摘要（仅证件字段）")
     confidence: float = 1.0
@@ -255,6 +254,109 @@ class ContentFile(_Strict):
     documents: list[DocumentContent]
     fields: list[FieldRecord]
     anomalies: list[ExtractionAnomaly]
+
+
+# 宿主 OCR 契约 ---------------------------------------------------------------
+
+
+OCRResultStatus = Literal[
+    "succeeded", "failed", "blocked", "not_supported", "cancelled"
+]
+OCRProcessingLocation = Literal["local", "cloud"]
+
+
+class OCRCapabilities(_Strict):
+    contract_version: Literal["ocr.capabilities.v1"]
+    provider_id: str
+    provider_version: str
+    processing_location: OCRProcessingLocation
+    input_formats: list[str] = Field(default_factory=list)
+    max_pages: int | None = Field(default=None, ge=1)
+    max_file_size_bytes: int | None = Field(default=None, ge=1)
+    languages: list[str] = Field(default_factory=list)
+    returns_confidence: bool
+    returns_block_coordinates: bool
+    model_names: list[str] = Field(default_factory=list)
+    inference_engine: str | None = None
+    location_precision: Literal["block", "page_only"] = "page_only"
+
+
+class OCRCapabilitiesFile(_Strict):
+    capabilities: OCRCapabilities
+    checked_at: datetime
+    accepted: bool
+    rejection_reasons: list[str] = Field(default_factory=list)
+
+
+class OCRJob(_Strict):
+    contract_version: Literal["ocr-job.v1"]
+    job_id: str
+    document_id: str
+    source_sha256: str
+    page: int = Field(ge=1)
+    page_image_sha256: str
+    input_ref: str
+    languages: list[str] = Field(default_factory=lambda: ["zh-Hans", "en"])
+    mode: Literal["fast", "accurate"] = "accurate"
+    purpose: str = "tender_clearance_field_candidates"
+    privacy_requirement: Literal["local_only", "user_approved_cloud"] = "local_only"
+
+
+class OCRJobFile(_Strict):
+    run: RunInfo
+    jobs: list[OCRJob]
+
+
+class OCRBBox(_Strict):
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    width: float = Field(ge=0.0, le=1.0)
+    height: float = Field(ge=0.0, le=1.0)
+
+
+class OCRBlock(_Strict):
+    text: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    bbox: OCRBBox | None = None
+
+
+class OCRProviderInfo(_Strict):
+    id: str
+    version: str
+    engine: str
+    models: list[str] = Field(default_factory=list)
+    processing_location: OCRProcessingLocation
+
+
+class OCRResult(_Strict):
+    contract_version: Literal["ocr-result.v1"]
+    job_id: str
+    document_id: str
+    source_sha256: str
+    page: int = Field(ge=1)
+    status: OCRResultStatus
+    provider: OCRProviderInfo
+    average_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    location_precision: Literal["block", "page_only"] = "page_only"
+    blocks: list[OCRBlock] = Field(default_factory=list)
+    detail: str | None = None
+    completed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_status_payload(self) -> "OCRResult":
+        if self.status == "succeeded" and not self.blocks:
+            raise ValueError("succeeded OCR result must contain at least one block")
+        if self.status != "succeeded" and not self.detail:
+            raise ValueError("non-success OCR result must contain detail")
+        if self.provider.processing_location == "cloud" and self.job_id == "":
+            raise ValueError("cloud OCR result must retain job identity")
+        return self
+
+
+class OCRResultFile(_Strict):
+    run: RunInfo
+    results: list[OCRResult]
+    import_errors: list[str] = Field(default_factory=list)
 
 
 # 交叉匹配矩阵 ----------------------------------------------------------------
@@ -334,7 +436,7 @@ class ExternalRecord(_Strict):
     subject_uscc: str | None = None
     record_kind: Literal[
         "dishonesty", "penalty", "judicial_case", "ownership",
-        "registration", "judicial_summary", "operating_risk", "operating_summary",
+        "registration", "branch", "personnel", "judicial_summary", "operating_risk", "operating_summary",
         "other",
     ]
     fields: dict[str, Any] = Field(

@@ -8,13 +8,17 @@
 - output/人工复核清单.csv  I 级/主体歧义/低置信度/缺口（utf-8-sig）
 - output/清标报告.docx     展示副本（python-docx 生成；可选）
 
-渲染前运行完整性校验与脱敏检查：任一输出含完整身份证号/手机号即失败。
+渲染前运行完整性校验；`redaction_mode: standard` 额外执行完整身份证号/手机号扫描，
+`none` 模式按项目授权保留原值，但任一模式都禁止输出访问凭据。
 """
 
 from __future__ import annotations
 
 import csv
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,6 +44,7 @@ from tc.models import (
     SOURCE_LABELS,
 )
 from tc.projio import ProjectError, ensure_output_dirs, load_project_config
+from tc.srm_gate import SrmReportGateError, validate_srm_report_gate
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "清标报告.md.jinja"
 
@@ -53,8 +58,14 @@ app = typer.Typer(help="渲染清标报告与结构化结果")
 @app.command()
 def run(
     project_dir: Path = typer.Argument(..., exists=True, file_okay=False, help="项目目录"),
-    docx: bool = typer.Option(True, help="同时生成 DOCX 展示副本"),
+    profile: str = typer.Option("report", help="输出档位：report / review / workpaper"),
+    docx: bool = typer.Option(False, "--docx/--no-docx", help="兼容选项：额外生成 DOCX"),
+    skip_srm_gate: bool = typer.Option(False, "--skip-srm-gate", help="仅供离线测试夹具使用，正式报告不得跳过"),
 ) -> None:
+    if profile not in {"report", "review", "workpaper"}:
+        typer.secho(f"[错误] 不支持的输出档位：{profile}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    want_docx = docx or profile in {"review", "workpaper"}
     try:
         cfg = load_project_config(project_dir)
         interim = project_dir / "output/interim"
@@ -68,6 +79,12 @@ def run(
     except (ProjectError, FileNotFoundError) as exc:
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+    if not skip_srm_gate:
+        try:
+            validate_srm_report_gate(entities, ext)
+        except SrmReportGateError as exc:
+            typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=4)
     out_dir, interim = ensure_output_dirs(project_dir)
 
     evidence: dict[str, Evidence] = {}
@@ -91,7 +108,7 @@ def run(
     result_path = out_dir / "清标结果.json"
     write_json(result_path, bundle.model_dump(mode="json"))
 
-    ctx = _build_context(cfg, inventory, entities, meta, ext, findings, evidence, low_conf_ids, content)
+    ctx = _build_context(cfg, inventory, entities, meta, ext, findings, evidence, low_conf_ids, content, project_dir)
     md_path = out_dir / "清标报告.md"
     _render_markdown(ctx, md_path)
 
@@ -100,37 +117,57 @@ def run(
     try:
         from tc.md2pdf import md_to_pdf
 
-        md_to_pdf(md_path.read_text(encoding="utf-8"), pdf_path)
+        md_to_pdf(md_path.read_text(encoding="utf-8"), pdf_path, base_dir=out_dir)
     except Exception as exc:  # noqa: BLE001
         typer.secho(f"[提示] PDF 生成失败（不影响验收基准输出）：{exc}", fg=typer.colors.YELLOW)
 
     _render_evidence_csv(evidence, inventory, out_dir / "证据索引.csv")
     _render_review_csv(findings, entities, low_conf_ids, inventory, content, out_dir / "人工复核清单.csv")
-    if docx:
+    if want_docx:
         try:
             _render_docx(ctx, out_dir / "清标报告.docx")
         except Exception as exc:  # noqa: BLE001
             typer.secho(f"[提示] DOCX 生成失败（不影响验收基准输出）：{exc}", fg=typer.colors.YELLOW)
 
-    # 脱敏检查：所有对外输出不得包含完整身份证号/手机号（PDF 提取文本一并检查）
+    if profile == "workpaper":
+        worksheet = Path(__file__).with_name("render_worksheet.py")
+        proc = subprocess.run([sys.executable, str(worksheet), str(project_dir)], capture_output=True, text=True)
+        if proc.returncode:
+            typer.secho(f"[提示] Excel 工作底稿生成失败（不影响报告）：{(proc.stdout + proc.stderr)[-600:]}", fg=typer.colors.YELLOW)
+
+    # standard 模式下执行脱敏检查；none 模式按用户授权输出完整身份证号/手机号。
     check_paths = [result_path, md_path, out_dir / "证据索引.csv", out_dir / "人工复核清单.csv"]
     if pdf_path.exists():
         check_paths.append(pdf_path)
-    for path in check_paths:
-        if path.suffix == ".pdf":
-            import fitz
+    if cfg.redaction_mode == "standard":
+        for path in check_paths:
+            if path.suffix == ".pdf":
+                import fitz
 
-            text = "\n".join(page.get_text() for page in fitz.open(path))
-        else:
-            text = path.read_text(encoding="utf-8")
-        hits = _find_sensitive(text)
-        if hits:
-            typer.secho(f"[错误] 脱敏检查失败：{path.name} 中发现疑似完整证件号/手机号：{hits}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=3)
+                text = "\n".join(page.get_text() for page in fitz.open(path))
+            else:
+                text = path.read_text(encoding="utf-8")
+            hits = _find_sensitive(text)
+            if hits:
+                typer.secho(f"[错误] 脱敏检查失败：{path.name} 中发现疑似完整证件号/手机号：{hits}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=3)
+
+    exports = out_dir / "exports" / profile
+    exports.mkdir(parents=True, exist_ok=True)
+    export_names = ["清标结果.json", "清标报告.md", "证据索引.csv", "人工复核清单.csv"]
+    if pdf_path.exists():
+        export_names.append("清标报告.pdf")
+    if want_docx and (out_dir / "清标报告.docx").exists():
+        export_names.append("清标报告.docx")
+    if profile == "workpaper" and (out_dir / "清标底稿.xlsx").exists():
+        export_names.append("清标底稿.xlsx")
+    for name in export_names:
+        shutil.copy2(out_dir / name, exports / name)
 
     typer.secho(
         f"[OK] 报告已生成 → {out_dir / '清标报告.md'}、清标结果.json、证据索引.csv、人工复核清单.csv"
-        + ("、清标报告.pdf" if pdf_path.exists() else ""),
+        + ("、清标报告.pdf" if pdf_path.exists() else "")
+        + f"；档位={profile} → {exports}",
         fg=typer.colors.GREEN,
     )
 
@@ -187,7 +224,7 @@ def _frow(f: Finding, names: dict[str, str]) -> dict:
     }
 
 
-def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content) -> dict:
+def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content, project_dir: Path) -> dict:
     names = _sup_name(entities)
     sups = entities.suppliers
     findings = findings_file.findings
@@ -213,11 +250,38 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
             "agent_id": party("bid_agent", "id_mask"),
         })
 
+    srm_queries = {
+        s.supplier_id: next(
+            (q for q in ext.queries if q.source_id == "srm" and q.subject_supplier_id == s.supplier_id),
+            None,
+        )
+        for s in sups
+    }
+
+    def _srm_query_status(supplier_id: str) -> str:
+        q = srm_queries.get(supplier_id)
+        return q.status if q else "未查询"
+
     srm_registration = []
+    for supplier in sups:
+        rows = [r for r in ext.records if r.record_kind == "registration" and r.supplier_id == supplier.supplier_id]
+        if rows:
+            for r in rows:
+                srm_registration.append({
+                    "supplier": supplier.display_name,
+                    "fields": r.fields,
+                    "evidence_ids": r.evidence_ids,
+                    "query_status": _srm_query_status(supplier.supplier_id),
+                })
+        else:
+            srm_registration.append({
+                "supplier": supplier.display_name,
+                "fields": {},
+                "evidence_ids": [],
+                "query_status": _srm_query_status(supplier.supplier_id),
+            })
+
     ownership_rows_raw = []
-    for r in ext.records:
-        if r.record_kind == "registration":
-            srm_registration.append({"supplier": names.get(r.supplier_id or "", r.subject_name or "未归属"), "fields": r.fields, "evidence_ids": r.evidence_ids})
     for o in ext.ownership:
         ownership_rows_raw.append({
             "supplier": names.get(o.supplier_id or "", "未归属"),
@@ -227,12 +291,71 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
             "ratio": str(o.share_ratio) if o.share_ratio is not None else "未返回",
             "method": "未返回", "evidence_ids": o.evidence_ids,
         })
+    for r in ext.records:
+        if r.record_kind == "ownership":
+            ownership_rows_raw.append({
+                "supplier": names.get(r.supplier_id or "", r.subject_name or "未归属"),
+                "shareholder": r.fields.get("股东名称") or r.fields.get("股东") or r.fields.get("shareholder") or "未取得",
+                "amount": str(r.fields.get("投资金额") or r.fields.get("出资额") or "未返回"),
+                "time": str(r.fields.get("认缴时间") or r.fields.get("认缴日期") or "未返回"),
+                "ratio": str(r.fields.get("认缴比例") or r.fields.get("持股比例") or "未返回"),
+                "method": str(r.fields.get("认缴出资方式") or r.fields.get("出资方式") or "未返回"),
+                "evidence_ids": r.evidence_ids,
+            })
+
+    def _section_rows(record_kind: str, labels: dict[str, str]) -> list[dict]:
+        out = []
+        for r in ext.records:
+            if r.record_kind != record_kind:
+                continue
+            out.append({
+                "supplier": names.get(r.supplier_id or "", r.subject_name or "未归属"),
+                "fields": {label: r.fields.get(key, "未返回") for key, label in labels.items()},
+                "evidence_ids": r.evidence_ids,
+            })
+        return out
+
+    srm_branches = _section_rows("branch", {
+        "企业名称": "企业名称", "成立日期": "成立日期", "企业状态": "企业状态", "法人": "法人",
+    })
+    srm_personnel = _section_rows("personnel", {"姓名": "姓名", "职位": "职位"})
+
+    def _duplicate_result(rows: list[dict], fields: list[str], empty: str = "未取得，无法进行重复校验") -> str:
+        values: dict[str, set[str]] = {}
+        for row in rows:
+            supplier = str(row.get("supplier") or "未归属")
+            source = row.get("fields") or row
+            for field in fields:
+                value = str(source.get(field) or "").strip()
+                if value and value not in {"未返回", "未取得", "—"}:
+                    values.setdefault(f"{field}:{value}", set()).add(supplier)
+        duplicates = [key for key, owners in values.items() if len(owners) > 1]
+        if duplicates:
+            return "发现重复：" + "；".join(duplicates[:8])
+        if not values:
+            return empty
+        return "未发现重复"
+
+    registration_for_check = [r for r in srm_registration if r["fields"]]
+    srm_duplicate_checks = {
+        "工商信息": _duplicate_result(registration_for_check, ["企业名称", "统一社会信用代码", "法定代表人"]),
+        "股东信息": _duplicate_result(ownership_rows_raw, ["股东名称", "股东", "shareholder", "ratio", "认缴比例", "持股比例"]),
+        "分支机构": _duplicate_result(srm_branches, ["企业名称", "法人"]),
+        "主要人员": _duplicate_result(srm_personnel, ["姓名", "职位"]),
+    }
     government_screenshots = []
     for ev in evidence.values():
         if ev.field == "external.government_procurement":
             loc = ev.location
             if loc.get("kind") in ("snapshot", "url"):
-                government_screenshots.append({"label": "中国政府采购网查询证据", "ref": loc.get("path") or loc.get("url") or "未提供"})
+                ref = loc.get("file") or loc.get("path") or loc.get("url") or "未提供"
+                image = None
+                local_file = loc.get("file")
+                if local_file and Path(project_dir / str(local_file)).suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                    source = project_dir / str(local_file)
+                    if source.exists():
+                        image = os.path.relpath(source, project_dir / "output")
+                government_screenshots.append({"label": "中国政府采购网查询证据", "ref": ref, "image": image})
     coverage_map = {(c.supplier_id, c.source_id): c.status for c in findings_file.coverage}
     sources = ["government_procurement", "srm"]
 
@@ -252,6 +375,8 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
             "iii": sum(1 for f in rows if f.level == "III"),
             "review": sum(1 for f in rows if f.finding_id in review_set),
             "unfinished": unfinished_by_sup.get(s.supplier_id, 0),
+            "srm_status": coverage_map.get((s.supplier_id, "srm"), "not_queried"),
+            "gov_status": coverage_map.get((s.supplier_id, "government_procurement"), "not_queried"),
         })
     coverage_matrix = [
         {
@@ -422,13 +547,16 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
 
     return {
         "project": cfg,
+        "project_dir": project_dir,
         "run": inventory.run,
         "project_identity": project_identity,
         "business_rows": business_rows,
         "srm_registration": srm_registration,
         "srm_ownership": ownership_rows_raw,
-        "srm_branches": [],
-        "srm_personnel": [],
+        "srm_branches": srm_branches,
+        "srm_personnel": srm_personnel,
+        "srm_duplicate_checks": srm_duplicate_checks,
+        "srm_query_status": {s.display_name: _srm_query_status(s.supplier_id) for s in sups},
         "government_screenshots": government_screenshots,
         "summary": {
             "deadline_display": deadline_display,
@@ -532,34 +660,64 @@ def _render_docx(ctx: dict, path: Path) -> None:
     d.add_heading(f"投标清标报告：{ctx['project'].project_name}", level=0)
     p = d.add_paragraph(
         f"项目编号 {ctx['project'].project_id}；投标截止时间 {ctx['summary']['deadline_display']}；"
-        f"运行标识 {ctx['run'].run_id}。本报告为风险线索整理结果，非最终认定；"
-        "标注“人工复核必需”的条目须人工复核后使用。"
+        f"运行标识 {ctx['run'].run_id}。本报告为风险线索整理结果，非最终认定。"
     )
     p.runs[0].font.size = Pt(9)
+    d.add_heading("1. 封面信息页", level=1)
+    d.add_paragraph("招标人：" + "；".join(ctx["project_identity"]["tenderer"] or ["未取得"]))
+    d.add_paragraph("项目名称：" + "；".join(ctx["project_identity"]["project_name"] or [ctx["project"].project_name]))
+    d.add_paragraph("投标人：" + "、".join(ctx["summary"]["supplier_names"]))
+    d.add_heading("2. 基本信息页", level=1)
+    for r in ctx["business_rows"]:
+        d.add_paragraph(
+            f"{r['supplier']}：{r['company']}；统一社会信用代码 {r['uscc']}；"
+            f"法定代表人 {r['legal_name']}（{r['legal_id']}）；"
+            f"授权代表 {r['agent_name']}（{r['agent_id']}）"
+        )
+    d.add_heading("3. 工商信息", level=1)
+    for r in ctx["srm_registration"]:
+        d.add_paragraph(f"{r['supplier']}：{r['fields'] or '登录成功但未取得工商记录'}")
+    d.add_paragraph("交叉校验：" + ctx["srm_duplicate_checks"]["工商信息"])
+    d.add_heading("4. 股东信息", level=1)
+    for r in ctx["srm_ownership"]:
+        d.add_paragraph(f"{r['supplier']}：{r['shareholder']}；投资金额 {r['amount']}；认缴比例 {r['ratio']}")
+    d.add_paragraph("交叉校验：" + ctx["srm_duplicate_checks"]["股东信息"])
+    d.add_heading("5. 分支机构", level=1)
+    for r in ctx["srm_branches"]:
+        d.add_paragraph(f"{r['supplier']}：{r['fields']}")
+    d.add_paragraph("交叉校验：" + ctx["srm_duplicate_checks"]["分支机构"])
+    d.add_heading("6. 主要人员", level=1)
+    for r in ctx["srm_personnel"]:
+        d.add_paragraph(f"{r['supplier']}：{r['fields']}")
+    d.add_paragraph("交叉校验：" + ctx["srm_duplicate_checks"]["主要人员"])
+    d.add_heading("7. 政府采购网失信信息及证据截图", level=1)
+    for src in ctx["dishonesty_sources"]:
+        if src["label"] != "中国政府采购网":
+            continue
+        d.add_paragraph("；".join(r["line"] for r in src["status_rows"]))
+        for r in src["records"]:
+            d.add_paragraph(f"{r['supplier']}：{r['behavior']} / {r['penalty']}（{r['date']}）", style="List Bullet")
+    for shot in ctx["government_screenshots"]:
+        image_ref = shot.get("image")
+        if image_ref:
+            try:
+                from docx.shared import Inches
+                d.add_paragraph(f"证据截图：{shot['ref']}")
+                d.add_picture(str(ctx["project_dir"] / "output" / image_ref), width=Inches(6.2))
+            except Exception:  # noqa: BLE001 - 图片损坏时不阻断文字报告
+                d.add_paragraph(f"证据截图：{shot['ref']}（图片无法嵌入，请按引用核对）")
+    d.add_heading("8. PDF、Office 与扫描件文件线索", level=1)
+    for f in ctx["metadata_findings"]:
+        d.add_paragraph(f"[{f['level_label']}|{f['evidence_strength']}] {f['fact']}（{f['finding_id']}）")
+    d.add_heading("9. 清标结论与三级预警", level=1)
     for s in ctx["summary"]["supplier_rows"]:
         d.add_paragraph(
             f"{s['name']}：I 级 {s['i']} 项；II 级 {s['ii']} 项；III 级 {s['iii']} 项；"
-            f"必须人工复核 {s['review']} 项；未完成查询 {s['unfinished']} 项。"
+            f"必须人工复核 {s['review']} 项。"
         )
-    d.add_heading("I 级预警（人工复核必需）", level=1)
     for f in ctx["summary"]["headline_findings"]:
         d.add_paragraph(f"{f['finding_id']}（{f['rule_id']}）：{f['fact']}", style="List Bullet")
-    d.add_heading("文件属性风险检查", level=1)
-    for f in ctx["metadata_findings"]:
-        d.add_paragraph(f"[{f['level_label']}|{f['evidence_strength']}] {f['fact']}（{f['finding_id']}，规则 {f['rule_id']}）")
-    d.add_heading("股权关系与司法经营风险", level=1)
-    for o in ctx["ownership"]:
-        d.add_paragraph(f"股权：{o['from_label']} → {o['to_company_name']}（{o['confirmation_label']}）")
-    for r in ctx["judicial_rows"]:
-        d.add_paragraph(f"司法：{r['supplier']}（{r['confirmation_label']}）：{r['desc']}")
-    for f in ctx["ownership_judicial_findings"]:
-        d.add_paragraph(f"[{f['level_label']}] {f['fact']}")
-    d.add_heading("违法失信信息", level=1)
-    for src in ctx["dishonesty_sources"]:
-        d.add_paragraph(f"{src['label']}：" + "；".join(r["line"] for r in src["status_rows"]))
-        for r in src["records"]:
-            d.add_paragraph(f"  · {r['supplier']}：{r['behavior']} / {r['penalty']}（{r['date']}，有效期 {r['validity']}）", style="List Bullet")
-    d.add_heading("人工复核与待补资料", level=1)
+    d.add_heading("10. 证据与人工复核", level=1)
     for f in ctx["review_findings"]:
         d.add_paragraph(f"{f['finding_id']}：{f['fact']}", style="List Bullet")
     for g in ctx["review_gaps"]:

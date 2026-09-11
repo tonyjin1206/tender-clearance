@@ -61,7 +61,7 @@ def run(
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     _out, interim = ensure_output_dirs(project_dir)
-    builder = EvidenceBuilder(inventory.run, cfg.id_digest_salt)
+    builder = EvidenceBuilder(inventory.run, cfg.id_digest_salt, cfg.redaction_mode)
 
     ext_base = project_dir / "external-evidence"
     queries: list[ExternalQuery] = []
@@ -176,17 +176,23 @@ def _import_json_file(path: Path, source_id: str, entities: EntitiesFile, builde
         sha256=sha,
         note=f"渠道={channel}；主体={name or ''}{'/' + uscc if uscc else ''}；查询人={querier or '未填写'}",
     )
+    query_supplier_id = supplier_id if confirmation == "confirmed" else None
+    query_status = status
+    query_detail = data.get("note")
+    if status == "match" and confirmation != "confirmed":
+        query_status = "needs_manual_review"
+        query_detail = query_detail or "导入主体仅按名称候选，未按统一社会信用代码确认；不得自动归属"
     query = ExternalQuery(
         query_id=qid,
         source_id=source_id,  # type: ignore[arg-type]
-        subject_supplier_id=supplier_id,
+        subject_supplier_id=query_supplier_id,
         subject_key={"uscc": uscc, "name": name},
         query_mode=query_mode,  # type: ignore[arg-type]
         queried_at=queried_at,
-        status=status,  # type: ignore[arg-type]
+        status=query_status,  # type: ignore[arg-type]
         record_count=len(data.get("records", [])),
         evidence_ids=[ev.evidence_id],
-        detail=data.get("note"),
+        detail=query_detail,
         adapter_version="import/0.3.0",
     )
     records: list[ExternalRecord] = []
@@ -223,7 +229,7 @@ def _import_json_file(path: Path, source_id: str, entities: EntitiesFile, builde
         first = records[0]
         if first.subject_name or first.subject_uscc:
             query.subject_key = {"uscc": first.subject_uscc, "name": first.subject_name}
-    query.subject_supplier_id = supplier_id
+    query.subject_supplier_id = supplier_id if confirmation == "confirmed" else None
     own: list[OwnershipRelation] = []
     for i, item in enumerate(data.get("ownership", [])):
         if not isinstance(item, dict):

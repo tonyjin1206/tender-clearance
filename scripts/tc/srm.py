@@ -54,6 +54,10 @@ class SrmCredentials:
     username: str = ""
     password: str = ""
 
+    def clear(self) -> None:
+        self.username = ""
+        self.password = ""
+
 
 def load_srm_config(path: Path | None = None) -> dict[str, Any]:
     p = path or DEFAULT_SRM_CONFIG_PATH
@@ -214,6 +218,11 @@ class SrmClient:
             self._token = token
             return True, "SRM 登录成功（令牌仅存内存）"
         return False, f"未知 auth.mode：{mode}"
+
+    def close(self) -> None:
+        """清除运行时凭据和令牌。"""
+        self.credentials.clear()
+        self._token = None
 
     # ------------------------------------------------------------- 查询
 

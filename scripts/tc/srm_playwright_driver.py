@@ -352,13 +352,31 @@ class PlaywrightSrmDriver:
 
     # ------------------------------------------------------------ 页面读取
 
-    def read_section(self, section: Literal["basic", "judicial", "operating"]) -> BrowserSectionResult:
+    def read_section(self, section: Literal["basic", "shareholders", "branches", "personnel", "judicial", "operating"]) -> BrowserSectionResult:
         pf = self._wait_profile_frame(10000)
         if pf is None:
             return BrowserSectionResult(section=section, structured=False,
                                         detail="企业画像 iframe 未出现，需人工核对")
         if section == "basic":
             return self._read_basic(pf)
+        if section in {"shareholders", "branches", "personnel"}:
+            labels = {
+                "shareholders": ["股东信息", "股东", "工商股东"],
+                "branches": ["分支机构"],
+                "personnel": ["主要人员"],
+            }[section]
+            if not self._click_in_frame(pf, labels):
+                return BrowserSectionResult(section=section, structured=False,
+                                            detail=f"画像页未找到『{labels[0]}』入口，需人工核对")
+            pf.page.wait_for_timeout(2500)
+            records = self._frame_table_rows(pf)
+            return BrowserSectionResult(
+                section=section,
+                records=records,
+                evidence_ref=f"企业画像 > {labels[0]}",
+                structured=bool(records),
+                detail=None if records else f"{labels[0]}页面无可机读记录",
+            )
         tab = "司法风险" if section == "judicial" else "经营风险"
         categories = _JUDICIAL_CATEGORIES if section == "judicial" else _OPERATING_CATEGORIES
         if not self._click_in_frame(pf, [tab]):

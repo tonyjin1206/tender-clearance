@@ -372,9 +372,15 @@ class SrmAdapter:
     source_id = "srm"
     version = ADAPTER_VERSION
 
-    def __init__(self, config: SourceConfig | None = None, client: Any = None) -> None:
+    def __init__(
+        self,
+        config: SourceConfig | None = None,
+        client: Any = None,
+        credentials: tuple[str, str] | None = None,
+    ) -> None:
         self.config = config
         self._client = client
+        self._runtime_credentials = credentials
 
     def _get_client(self):
         if self._client is None:
@@ -398,18 +404,18 @@ class SrmAdapter:
                     credential_provider=(
                         _srm_browser.get_browser_credential_provider()
                         or (lambda: _srm_browser.BrowserCredentials(
-                            username=os.environ.get("SRM_USER", ""),
-                            password=os.environ.get("SRM_PASSWORD", ""),
+                            username=(self._runtime_credentials or (os.environ.get("SRM_USER", ""), ""))[0],
+                            password=(self._runtime_credentials or ("", os.environ.get("SRM_PASSWORD", "")))[1],
                         ))
                     ),
                     keep_session=True,
                 )
             else:
                 cfg = load_srm_config()
-                creds = SrmCredentials(
-                    username=os.environ.get("SRM_USER", ""),
-                    password=os.environ.get("SRM_PASSWORD", ""),
+                username, password = self._runtime_credentials or (
+                    os.environ.get("SRM_USER", ""), os.environ.get("SRM_PASSWORD", "")
                 )
+                creds = SrmCredentials(username=username, password=password)
                 self._client = SrmClient(cfg, creds)
         return self._client
 
@@ -432,6 +438,7 @@ class SrmAdapter:
         close = getattr(self._client, "close", None)
         if callable(close):
             close()
+        self._runtime_credentials = None
 
 
 class BrowserSrmAdapter:
@@ -466,11 +473,12 @@ class BrowserSrmAdapter:
 def build_adapters(
     configs: dict[str, SourceConfig],
     transport_factory: Callable[[SourceConfig], HttpTransport | None] | None = None,
+    runtime_credentials: dict[str, tuple[str, str]] | None = None,
 ) -> dict[str, SourceAdapter]:
     out: dict[str, SourceAdapter] = {}
     for sid, cfg in configs.items():
         if sid == "srm":
-            out[sid] = SrmAdapter(cfg)
+            out[sid] = SrmAdapter(cfg, credentials=(runtime_credentials or {}).get(sid))
         else:
             transport = transport_factory(cfg) if transport_factory else None
             out[sid] = HttpSourceAdapter(cfg, transport=transport)

@@ -442,7 +442,7 @@
           "type": "string"
         },
         "raw_value": {
-          "description": "原文摘录；证件号/手机号已脱敏",
+          "description": "原文摘录；是否脱敏由 project.yaml 的 redaction_mode 决定",
           "title": "Raw Value",
           "type": "string"
         },
@@ -773,6 +773,8 @@
             "judicial_case",
             "ownership",
             "registration",
+            "branch",
+            "personnel",
             "judicial_summary",
             "operating_risk",
             "operating_summary",
@@ -1507,8 +1509,11 @@
           "type": "array"
         },
         "redaction_mode": {
-          "const": "standard",
-          "default": "standard",
+          "default": "none",
+          "enum": [
+            "none",
+            "standard"
+          ],
           "title": "Redaction Mode",
           "type": "string"
         },
@@ -1525,11 +1530,10 @@
         },
         "ocr_provider": {
           "default": "none",
-          "description": "OCR 适配器；none 时扫描页进入人工核对；paddle 需安装 paddleocr/paddlepaddle（可选依赖），OCR 字段走低置信度通道",
+          "description": "仅用于 none 或测试 mock；生产 OCR 由宿主 Agent 通过 OCR 契约提供",
           "enum": [
             "none",
-            "mock",
-            "paddle"
+            "mock"
           ],
           "title": "Ocr Provider",
           "type": "string"
@@ -1573,7 +1577,7 @@
           "type": "string"
         },
         "redaction_mode": {
-          "description": "脱敏模式；当前固定 standard",
+          "description": "输出模式：none 表示按项目授权展示原值，standard 表示脱敏",
           "title": "Redaction Mode",
           "type": "string"
         },

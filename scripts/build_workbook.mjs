@@ -17,9 +17,12 @@ function addSheet(name, headers, rows, opts={}){
   return s;
 }
 const inv=bundle.inventory, ent=bundle.entities, mat=bundle.matches, ext=bundle.external, fin=bundle.findings, cfg=bundle.config;
+// artifact-tool 自动把 ISO 日期字符串转换为 Excel 序列号；序列号的小数部分
+// 可能恰好匹配手机号正则。加上可读标签，保持日期为文本并避免脱敏检查误报。
+const dateDisplay = v => v ? `时间 ${v}` : '未提供（禁止有效期结论）';
 addSheet('说明',['项','内容'],[
- ['项目',`${cfg.project_id||''} ${cfg.project_name||''}`],['投标截止',cfg.bid_deadline||'未提供（禁止有效期结论）'],['运行时间(UTC)',inv.run?.started_at||''],['工具/规则版本',`${inv.run?.tool_version||''} / rules ${inv.run?.rules_version||''}`],['外部查询模式',`${cfg.external_query_mode||''}（渠道：${(cfg.external_query_sources||[]).join(', ')||'无'}）`],['脱敏模式',cfg.redaction_mode||''],['使用边界','本底稿是风险线索与证据整理，不是违法/资格认定；I 级与主体歧义项必须人工复核；空结果不等于无风险。']]);
-addSheet('项目封面',['字段','值','证据/说明'],[['招标人/采购人','','[待确认]'],['项目名称',cfg.project_name||'','project.yaml'],['项目编号/编码',cfg.project_id||'','project.yaml'],['投标日期/截止',cfg.bid_deadline||'','project.yaml'],['封面证据','未提供独立封面证据','仅接受投标文件封面第一页']]);
+ ['项目',`${cfg.project_id||''} ${cfg.project_name||''}`],['投标截止',dateDisplay(cfg.bid_deadline)],['运行时间(UTC)',dateDisplay(inv.run?.started_at)],['工具/规则版本',`${inv.run?.tool_version||''} / rules ${inv.run?.rules_version||''}`],['外部查询模式',`${cfg.external_query_mode||''}（渠道：${(cfg.external_query_sources||[]).join(', ')||'无'}）`],['脱敏模式',cfg.redaction_mode||''],['使用边界','本底稿是风险线索与证据整理，不是违法/资格认定；I 级与主体歧义项必须人工复核；空结果不等于无风险。']]);
+addSheet('项目封面',['字段','值','证据/说明'],[['招标人/采购人','','[待确认]'],['项目名称',cfg.project_name||'','project.yaml'],['项目编号/编码',cfg.project_id||'','project.yaml'],['投标日期/截止',dateDisplay(cfg.bid_deadline),'project.yaml'],['封面证据','未提供独立封面证据','仅接受投标文件封面第一页']]);
 addSheet('供应商对照',['供应商ID','目录名','显示名','声明名称','统一社会信用代码','代码状态','主体确认','备注'],(ent.suppliers||[]).map(s=>[s.supplier_id,s.directory_name,s.display_name,s.declared_name,s.uscc,s.uscc_status,s.confirmation,s.confirmation_note||'']));
 addSheet('商务字段',['供应商ID','公司名称','统一社会信用代码','法定代表人','法定代表人证件掩码','授权代表','授权代表证件掩码','证据ID','状态'],(ent.suppliers||[]).map(s=>[s.supplier_id,s.declared_name,s.uscc,'[待确认]','[待确认]','[待确认]','[待确认]',(s.evidence_ids||[]).join('、'),s.confirmation||'']));
 addSheet('文件分类',['文档ID','供应商目录','路径','标书子类型','媒体类型','页数','字节数','提取状态','状态说明'],(inv.documents||[]).map(d=>[d.document_id,d.supplier_dir,d.relative_path,d.bid_subtype,d.media_type,d.page_count,d.size_bytes,d.extraction_status,d.status_detail||'']));
@@ -31,7 +34,7 @@ function byKind(kind){return records.filter(r=>r.record_kind===kind);}
 addSheet('SRM工商',['供应商','主体确认','记录类型','字段','值','状态','证据ID'],byKind('basic').map(r=>[r.supplier_id,r.subject_confirmation,r.record_kind,r.fields,r.value||'',r.status||'',(r.evidence_ids||[]).join('、')]));
 addSheet('SRM股东',['供应商','主体确认','记录类型','字段','值','生效起','生效止','状态','证据ID'],byKind('ownership').map(r=>[r.supplier_id,r.subject_confirmation,r.record_kind,r.fields,r.value||'',r.effective_from||'',r.effective_to||'',r.status||'',(r.evidence_ids||[]).join('、')]));
 addSheet('SRM分支机构',['供应商','主体确认','记录类型','字段','值','状态','证据ID'],byKind('branch').map(r=>[r.supplier_id,r.subject_confirmation,r.record_kind,r.fields,r.value||'',r.status||'',(r.evidence_ids||[]).join('、')]));
-addSheet('SRM主要人员',['供应商','主体确认','记录类型','字段','值','状态','证据ID'],byKind('person').map(r=>[r.supplier_id,r.subject_confirmation,r.record_kind,r.fields,r.value||'',r.status||'',(r.evidence_ids||[]).join('、')]));
+addSheet('SRM主要人员',['供应商','主体确认','记录类型','字段','值','状态','证据ID'],byKind('personnel').map(r=>[r.supplier_id,r.subject_confirmation,r.record_kind,r.fields,r.value||'',r.status||'',(r.evidence_ids||[]).join('、')]));
 addSheet('政采截图证据',['供应商','查询入口','证据状态','截图/文件证据','查询时间','备注'],(ext.queries||[]).filter(q=>q.source_id==='government_procurement').map(q=>[q.subject_supplier_id,'http://219.143.74.201/search/cr/',q.status,(q.evidence_ids||[]).join('、'),q.queried_at||'',q.detail||'未提供截图；仅保留实际导入证据']));
 const ev=[]; for(const fn of ['evidence-content.json','evidence-metadata.json','evidence-external.json','evidence-external-queries.json']){const d=bundle.evidence[fn]||{}; ev.push(...(d.evidence||[]));} addSheet('证据索引',['证据ID','来源类型','文档','字段','原文摘录','定位','方法','强度'],ev.map(e=>[e.evidence_id,e.source_type,e.document_id,e.field,e.raw_value,e.location,e.method,e.strength]));
 addSheet('文件清单',['文档ID','路径','分类','子类型','类型','页数','字节','SHA256(前12)','提取状态'],(inv.documents||[]).map(d=>[d.document_id,d.relative_path,d.category,d.bid_subtype,d.media_type,d.page_count,d.size_bytes,String(d.sha256||'').slice(0,12),d.extraction_status]));

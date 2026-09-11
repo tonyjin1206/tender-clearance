@@ -44,7 +44,7 @@ ocr_provider: none                   # none / mock（mock 仅测试）
 | 对象 | 必填字段 | 要点 |
 |---|---|---|
 | document | document_id、relative_path、media_type、size_bytes、sha256、extraction_status | 原文件不被脚本修改 |
-| evidence | evidence_id、source_type、location、field、raw_value、collected_at、method、strength | 定位可为 PDF 页码、Office 属性、表格坐标、URL、快照、导入记录号；raw_value 已脱敏 |
+| evidence | evidence_id、source_type、location、field、raw_value、collected_at、method、strength | 定位可为 PDF 页码、Office 属性、表格坐标、URL、快照、导入记录号；`raw_value` 是否脱敏由 `redaction_mode` 决定 |
 | supplier | supplier_id、directory_name、declared_name、uscc/uscc_status、confirmation | confirmation ∈ confirmed/candidate/unconfirmed；不可强制填充信用代码 |
 | party | party_id、name、role、id_digest/id_mask、evidence_ids | 角色含 legal_rep/bid_agent/shareholder/contact/project_manager |
 | external_query | query_id、source_id、subject_key、query_mode、queried_at、status、record_count | status ∈ match/no_match_verified/no_result/not_queried/blocked/failed/needs_manual_review |
@@ -118,8 +118,8 @@ ocr_provider: none                   # none / mock（mock 仅测试）
 - 联系方式：固话/手机去分隔符、分机单列；**手机号的规范化值为受控摘要**（P+sha256 前 16 位），
   展示用掩码 `138****0001`；不同手机号尾号相同不算匹配。
 - 地址：去空白标点的比对键 + 行政区划层级键（省+市+区县）；后者只作 III 级线索。
-- 身份证件号：受控比对摘要 = sha256(salt + 完整号码) 前 16 位；展示掩码 `1101**********7258`；
-  完整号码不写入结果、日志、异常堆栈。
+- 身份证件号：`standard` 模式使用受控比对摘要 = sha256(salt + 完整号码) 前 16 位和展示掩码
+  `1101**********7258`；`none` 模式按项目授权保留原值；完整号码均不得进入日志、异常堆栈。
 - 日期时间：统一 ISO 8601；无时区元数据按 UTC 比较；文件系统时间不能单独证明创作时间。
 
 ## 6. ID 稳定性
@@ -127,3 +127,79 @@ ocr_provider: none                   # none / mock（mock 仅测试）
 所有 ID = `<前缀>-` + sha256(规范化 JSON)[:12]。证据 ID 由
 (source_type, document_id, location, field, method, 展示值) 派生；发现 ID 由
 (rule_id, 规则键) 派生 —— 修改一条原始证据只影响其相关发现。
+
+## 7. 宿主 OCR 契约
+
+Core 不安装或导入 OCR 引擎。宿主 OCR Skill 先声明 `ocr.capabilities.v1`：
+
+```json
+{
+  "contract_version": "ocr.capabilities.v1",
+  "provider_id": "paddleocr-text-recognition",
+  "provider_version": "...",
+  "processing_location": "local",
+  "input_formats": ["pdf_page", "png", "jpeg"],
+  "languages": ["zh-Hans", "en", "digits"],
+  "returns_confidence": true,
+  "returns_block_coordinates": true,
+  "location_precision": "block",
+  "model_names": ["PP-OCRv4_mobile_det", "PP-OCRv4_mobile_rec"],
+  "inference_engine": "onnxruntime-cpu"
+}
+```
+
+Core 最低接受条件：能处理 PDF 页或 PNG/JPEG；声明简体中文、英文和数字；返回平均或块
+置信度；返回页号和文本；明确模型、Provider 版本、推理引擎和 `local/cloud` 位置。
+`cloud` 只有项目授权并将任务 `privacy_requirement` 设为 `user_approved_cloud` 时才可用。
+
+### `ocr-job.v1`
+
+无文本层页生成一个任务，任务只包含受控相对引用和输入哈希，不包含供应商猜测、完整
+证件号、手机号、凭据或外部链接：
+
+```json
+{
+  "contract_version": "ocr-job.v1",
+  "job_id": "OCRJ-...",
+  "document_id": "DOC-...",
+  "source_sha256": "...",
+  "page": 1,
+  "page_image_sha256": "...",
+  "input_ref": "bids/供应商A/商务标.pdf#page=1",
+  "languages": ["zh-Hans", "en"],
+  "mode": "accurate",
+  "purpose": "tender_clearance_field_candidates",
+  "privacy_requirement": "local_only"
+}
+```
+
+### `ocr-result.v1`
+
+Provider 必须回传任务身份、源文件哈希、页号、状态、实际模型/引擎/位置、完成时间和
+置信度。状态只能是 `succeeded`、`failed`、`blocked`、`not_supported`、`cancelled`；非
+成功状态必须含不敏感的 `detail`。Core 校验失败时写 `ocr_result_invalid` 并拒绝整批，
+不得生成字段。`succeeded` 结果无坐标时只能 page-only 降级候选，所有候选标低置信度。
+
+## 8. 缓存与增量运行
+
+```text
+output/
+├── interim/
+│   ├── inventory.json
+│   ├── content.json
+│   ├── metadata.json
+│   ├── ocr-jobs.json
+│   ├── ocr-results.json
+│   └── ocr-import-errors.json
+├── cache/
+│   ├── document/<source-sha256>.json
+│   ├── ocr/<source-sha>/<page>/<provider-fingerprint>.json
+│   └── external/<source>/<subject-key>/<evidence-hash>.json
+└── exports/<report|review|workpaper>/
+```
+
+文档缓存文件以源文件 SHA-256 定位，其中的底层解析快照可在内容阶段和属性阶段复用；
+内容/属性结果另带文档身份、相对路径、文件名分类、脱敏模式、盐指纹和 Provider 配置指纹，
+不满足时只复用解析快照并重新生成阶段结果，避免同内容副本串用证据路径。OCR 缓存至少
+包含源文件、页、页图像、Provider/版本、模型集合、推理引擎、语言和模式指纹。输入、模型
+或运行时改变时自动失效；报告只读取已存在的中间产物和缓存，不触发 OCR 或外部查询。

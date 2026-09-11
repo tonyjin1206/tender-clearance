@@ -30,6 +30,9 @@ EXPORTS = {
     "matches.schema.json": models.MatchesFile,
     "metadata.schema.json": models.MetadataFile,
     "report-bundle.schema.json": models.ReportBundle,
+    "ocr-capabilities.schema.json": models.OCRCapabilitiesFile,
+    "ocr-job.schema.json": models.OCRJobFile,
+    "ocr-result.schema.json": models.OCRResultFile,
 }
 
 

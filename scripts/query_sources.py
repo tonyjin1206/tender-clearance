@@ -11,6 +11,8 @@
 """
 
 from __future__ import annotations
+import getpass
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import typer
 
-from tc.canon import load_json, stable_id, write_json
+from tc.canon import content_hash, load_json, stable_id, write_json
 from tc.models import (
     EntitiesFile,
     ExternalEvidenceFile,
@@ -57,6 +59,9 @@ app = typer.Typer(help="执行外部查询并生成查询覆盖记录（合并�
 def run(
     project_dir: Path = typer.Argument(..., exists=True, file_okay=False, help="项目目录"),
     config_path: Path = typer.Option(None, help="外部渠道配置文件（默认 rules/external-sources.yaml）"),
+    interactive: bool = typer.Option(
+        False, "--interactive", help="允许在命令启动时交互输入 SRM 凭据；流水线默认只读环境变量"
+    ),
 ) -> None:
     try:
         cfg = load_project_config(project_dir)
@@ -67,7 +72,7 @@ def run(
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     _out, interim = ensure_output_dirs(project_dir)
-    builder = EvidenceBuilder(inventory.run, cfg.id_digest_salt)
+    builder = EvidenceBuilder(inventory.run, cfg.id_digest_salt, cfg.redaction_mode)
 
     queries: dict[tuple[str, str], ExternalQuery] = {}
     adapter_records: list = []
@@ -79,10 +84,18 @@ def run(
     source_configs = load_source_config(config_path)
     live_sources = list(cfg.external_query_sources) if cfg.external_query_mode == "live" else []
 
+    runtime_credentials: dict[str, tuple[str, str]] = {}
+    if "srm" in live_sources:
+        try:
+            runtime_credentials["srm"] = _collect_srm_credentials(allow_interactive=interactive)
+        except ProjectError as exc:
+            typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
     adapters = {}
     if live_sources:
         adapters = build_adapters({sid: source_configs.get(sid, SourceConfig(source_id=sid, label=sid))
-                                   for sid in live_sources})
+                                   for sid in live_sources}, runtime_credentials=runtime_credentials)
 
     now = datetime.now(timezone.utc)
     new_queries: list[ExternalQuery] = []
@@ -92,7 +105,9 @@ def run(
         subject = QuerySubject(supplier.supplier_id, supplier.declared_name, supplier.uscc)
         for sid in ALL_SOURCES:
             key = (sid, supplier.supplier_id)
-            if key in queries:
+            # SRM 作为报告前置门禁必须在本次运行中重新登录并查询；不能用历史导入
+            # 记录代替本次授权查询。其他渠道保留已有结果，避免重复刷新。
+            if key in queries and not (sid == "srm" and sid in live_sources):
                 continue
             if cfg.external_query_mode != "live" or sid not in live_sources:
                 # 未发起查询：但若存在“主体未归属、名称与该供应商一致”的导入记录，
@@ -140,6 +155,17 @@ def run(
         ownership=ext.ownership,
     )
     write_json(interim / "external.json", merged.model_dump(mode="json"))
+    # 外部刷新是独立资料获取任务：保留按渠道/主体/证据内容分层的快照缓存，
+    # 后续报告只消费 external.json，不重复访问网络。
+    for query in merged.queries:
+        related = [r for r in adapter_records
+                   if r.source_id == query.source_id and set(r.evidence_ids) & set(query.evidence_ids)]
+        subject_key = content_hash(query.subject_key)[:16]
+        cache_file = project_dir / "output/cache/external" / query.source_id / subject_key / f"{query.query_id}.json"
+        write_json(cache_file, {
+            "query": query.model_dump(mode="json"),
+            "records": [r.model_dump(mode="json") for r in related],
+        })
     from tc.models import EvidenceFile
 
     write_json(
@@ -151,6 +177,31 @@ def run(
         f"live 渠道={live_sources or '无'}） → external.json",
         fg=typer.colors.GREEN,
     )
+
+
+def _collect_srm_credentials(*, allow_interactive: bool = False) -> tuple[str, str]:
+    """取得本次运行的 SRM 凭据；默认不在执行中突然询问。"""
+    username = os.environ.get("SRM_USER", "").strip()
+    password = os.environ.get("SRM_PASSWORD", "")
+    if username and password:
+        return username, password
+    if not allow_interactive:
+        raise ProjectError(
+            "SRM 凭据未在运行开始前准备好；请先取得用户授权并设置 SRM_USER/SRM_PASSWORD，"
+            "或显式使用 --interactive 在命令启动时输入"
+        )
+    if not sys.stdin.isatty():
+        raise ProjectError("当前无可交互输入，请在运行前设置 SRM_USER/SRM_PASSWORD 后重试")
+    while not username or not password:
+        if not username:
+            username = input("SRM 用户名: ").strip()
+        if not password:
+            password = getpass.getpass("SRM 密码: ")
+        if not username or not password:
+            typer.secho("SRM 用户名和密码不能为空，请重新输入。", fg=typer.colors.YELLOW, err=True)
+            username = username.strip()
+            password = ""
+    return username, password
 
 
 def _placeholder_query(sid: str, subject: QuerySubject, status: str, detail: str, now: datetime) -> ExternalQuery:

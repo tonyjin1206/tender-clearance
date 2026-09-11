@@ -46,7 +46,7 @@ CredentialProvider = Callable[[], BrowserCredentials]
 
 BrowserLoginStatus = Literal["authenticated", "blocked", "failed", "manual"]
 SubjectConfirmation = Literal["confirmed", "candidate", "unconfirmed"]
-SectionName = Literal["basic", "judicial", "operating"]
+SectionName = Literal["basic", "shareholders", "branches", "personnel", "judicial", "operating"]
 
 
 @dataclass
@@ -66,10 +66,10 @@ class BrowserSubjectResult:
 
 @dataclass
 class BrowserSectionResult:
-    """浏览器从可见页面提取的脱敏结构化结果。
+    """浏览器从可见页面提取的结构化结果。
 
     ``evidence_ref`` 应是页面 URL、页面标题+分类或快照引用，不应包含 Cookie、
-    loginToken、密码和未经脱敏的完整 HTML。
+    loginToken、密码和未经处理的完整 HTML。
     """
 
     section: SectionName
@@ -240,7 +240,7 @@ class SrmBrowserClient:
             )
 
         sections: list[BrowserSectionResult] = []
-        for section in ("basic", "judicial", "operating"):
+        for section in ("basic", "shareholders", "branches", "personnel", "judicial", "operating"):
             try:
                 item = driver.read_section(section)  # type: ignore[arg-type]
             except Exception as exc:  # noqa: BLE001
@@ -292,6 +292,27 @@ class SrmBrowserClient:
                     fields=fields,
                     subject_confirmation=matched.confirmation,
                 ))
+            elif item.section == "shareholders":
+                for record in item.records:
+                    records.append(AdapterRecord(
+                        record_kind="ownership",
+                        fields=dict(record),
+                        subject_confirmation=matched.confirmation,
+                    ))
+            elif item.section == "branches":
+                for record in item.records:
+                    records.append(AdapterRecord(
+                        record_kind="branch",
+                        fields=dict(record),
+                        subject_confirmation=matched.confirmation,
+                    ))
+            elif item.section == "personnel":
+                for record in item.records:
+                    records.append(AdapterRecord(
+                        record_kind="personnel",
+                        fields=dict(record),
+                        subject_confirmation=matched.confirmation,
+                    ))
             elif item.section == "judicial":
                 for record in item.records:
                     records.append(AdapterRecord(

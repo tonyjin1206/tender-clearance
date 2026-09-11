@@ -23,6 +23,7 @@ from tc import parsers
 from tc.canon import load_json, write_json
 from tc.models import (
     DocumentMetadata,
+    Evidence,
     EvidenceFile,
     ExtractionAnomaly,
     InventoryFile,
@@ -33,6 +34,7 @@ from tc.normalize import parse_pdf_date
 from tc.projio import (
     EvidenceBuilder,
     ProjectError,
+    document_cache_key,
     ensure_output_dirs,
     load_project_config,
     load_run_info,
@@ -60,13 +62,19 @@ def run(
     project_dir: Path = typer.Argument(..., exists=True, file_okay=False, help="项目目录"),
 ) -> None:
     try:
-        load_project_config(project_dir)
-        inventory = InventoryFile(**load_json(project_dir / "output/interim/inventory.json"))
-    except ProjectError as exc:
+        build_metadata(project_dir)
+    except (ProjectError, FileNotFoundError) as exc:
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
+
+
+def build_metadata(project_dir: Path) -> MetadataFile:
+    """生成文件属性，优先复用内容阶段写入的一次性解析快照。"""
+    load_project_config(project_dir)
+    inventory = InventoryFile(**load_json(project_dir / "output/interim/inventory.json"))
     _out, interim = ensure_output_dirs(project_dir)
-    builder = EvidenceBuilder(load_run_info(interim), load_project_config(project_dir).id_digest_salt)
+    cfg = load_project_config(project_dir)
+    builder = EvidenceBuilder(load_run_info(interim), cfg.id_digest_salt, cfg.redaction_mode)
 
     documents: list[DocumentMetadata] = []
     anomalies: list[ExtractionAnomaly] = []
@@ -78,16 +86,36 @@ def run(
             continue
         path = project_dir / doc.relative_path
         try:
-            if doc.media_type == "application/pdf":
-                dm, an = _pdf_metadata(path, doc, builder)
+            parsed = None
+            cache_key = document_cache_key(doc, cfg, "metadata")
+            cached = _load_metadata_cache(project_dir, doc.sha256, cache_key)
+            if cached:
+                dm = DocumentMetadata(**cached["metadata"])
+                an = [ExtractionAnomaly(**x) for x in cached.get("metadata_anomalies", [])]
+                builder.extend([Evidence(**x) for x in cached.get("metadata_evidence", [])])
+            elif doc.media_type == "application/pdf":
+                parsed = parsers.deserialize_parsed(_load_document_parsed(project_dir, doc.sha256))
+                dm, an = _pdf_metadata(
+                    path, doc, builder, parsed,
+                    lightweight=doc.category == "bid" and doc.bid_subtype == "technical",
+                )
             elif doc.media_type.endswith("wordprocessingml.document"):
-                dm, an = _docx_metadata(path, doc, builder)
+                parsed = parsers.deserialize_parsed(_load_document_parsed(project_dir, doc.sha256))
+                if parsed is None and doc.category == "bid" and doc.bid_subtype == "technical":
+                    parsed = parsers.parse_docx_metadata(path)
+                dm, an = _docx_metadata(path, doc, builder, parsed)
             elif doc.media_type.endswith("spreadsheetml.sheet"):
-                dm, an = _xlsx_metadata(path, doc, builder)
+                parsed = parsers.deserialize_parsed(_load_document_parsed(project_dir, doc.sha256))
+                dm, an = _xlsx_metadata(
+                    path, doc, builder, parsed,
+                    lightweight=doc.category == "bid" and doc.bid_subtype == "technical",
+                )
             elif doc.media_type.startswith("image/"):
                 dm, an = _image_metadata(path, doc, builder)
             else:
                 continue
+            if not cached:
+                _write_metadata_cache(project_dir, doc.sha256, dm, an, builder, parsed, cache_key=cache_key)
         except Exception as exc:  # noqa: BLE001
             dm = DocumentMetadata(document_id=doc.document_id, relative_path=doc.relative_path, fields=[])
             an = [ExtractionAnomaly(document_id=doc.document_id, relative_path=doc.relative_path,
@@ -104,6 +132,53 @@ def run(
         f"[OK] 属性提取完成：{len(documents)} 个文档，唯一标识线索 {n_unique} 条 → metadata.json",
         fg=typer.colors.GREEN,
     )
+    return result
+
+
+def _load_metadata_cache(project_dir: Path, source_sha256: str, cache_key: str) -> dict | None:
+    path = project_dir / "output/cache/document" / f"{source_sha256}.json"
+    if not path.exists():
+        return None
+    try:
+        data = load_json(path)
+        if (data.get("source_sha256") != source_sha256
+                or data.get("metadata_cache_key") != cache_key
+                or "metadata" not in data):
+            return None
+        return data
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _load_document_parsed(project_dir: Path, source_sha256: str) -> dict | None:
+    path = project_dir / "output/cache/document" / f"{source_sha256}.json"
+    if not path.exists():
+        return None
+    try:
+        data = load_json(path)
+        return data.get("parsed") if data.get("source_sha256") == source_sha256 else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write_metadata_cache(project_dir: Path, source_sha256: str, metadata: DocumentMetadata,
+                          anomalies: list[ExtractionAnomaly], builder: EvidenceBuilder,
+                          parsed: object | None = None, *, cache_key: str) -> None:
+    path = project_dir / "output/cache/document" / f"{source_sha256}.json"
+    try:
+        payload = load_json(path) if path.exists() else {"source_sha256": source_sha256}
+    except (OSError, ValueError):
+        payload = {"source_sha256": source_sha256}
+    evidence_ids = {field.evidence_id for field in metadata.fields if field.evidence_id}
+    payload["metadata"] = metadata.model_dump(mode="json")
+    payload["metadata_cache_key"] = cache_key
+    payload["metadata_anomalies"] = [a.model_dump(mode="json") for a in anomalies]
+    payload["metadata_evidence"] = [
+        e.model_dump(mode="json") for e in builder.items if e.evidence_id in evidence_ids
+    ]
+    if parsed is not None:
+        payload["parsed"] = parsers.serialize_parsed(parsed)
+    write_json(path, payload)
 
 
 def _add(builder: EvidenceBuilder, doc, location: dict, field: str, raw_value: str, note: str | None = None):
@@ -131,8 +206,10 @@ def _field(builder: EvidenceBuilder, doc, field: str, raw_value: str, location: 
     )
 
 
-def _pdf_metadata(path: Path, doc, builder: EvidenceBuilder) -> tuple[DocumentMetadata, list[ExtractionAnomaly]]:
-    parsed = parsers.parse_pdf(path)
+def _pdf_metadata(path: Path, doc, builder: EvidenceBuilder,
+                  parsed: parsers.ParsedPdf | None = None,
+                  *, lightweight: bool = False) -> tuple[DocumentMetadata, list[ExtractionAnomaly]]:
+    parsed = parsed or parsers.parse_pdf(path, inspect_pages=not lightweight)
     fields: list[MetadataField] = []
     anomalies = [ExtractionAnomaly(document_id=doc.document_id, relative_path=doc.relative_path,
                                    anomaly=iss.kind, detail=iss.detail) for iss in parsed.issues]
@@ -200,8 +277,9 @@ def _pdf_metadata(path: Path, doc, builder: EvidenceBuilder) -> tuple[DocumentMe
     ), anomalies
 
 
-def _docx_metadata(path: Path, doc, builder: EvidenceBuilder) -> tuple[DocumentMetadata, list[ExtractionAnomaly]]:
-    parsed = parsers.parse_docx(path)
+def _docx_metadata(path: Path, doc, builder: EvidenceBuilder,
+                   parsed: parsers.ParsedDocx | None = None) -> tuple[DocumentMetadata, list[ExtractionAnomaly]]:
+    parsed = parsed or parsers.parse_docx(path)
     fields: list[MetadataField] = []
     anomalies = [ExtractionAnomaly(document_id=doc.document_id, relative_path=doc.relative_path,
                                    anomaly=iss.kind, detail=iss.detail) for iss in parsed.issues]
@@ -215,20 +293,21 @@ def _docx_metadata(path: Path, doc, builder: EvidenceBuilder) -> tuple[DocumentM
     return DocumentMetadata(document_id=doc.document_id, relative_path=doc.relative_path, fields=fields), anomalies
 
 
-def _xlsx_metadata(path: Path, doc, builder: EvidenceBuilder) -> tuple[DocumentMetadata, list[ExtractionAnomaly]]:
-    import openpyxl
-
+def _xlsx_metadata(path: Path, doc, builder: EvidenceBuilder,
+                   parsed: parsers.ParsedXlsx | None = None,
+                   *, lightweight: bool = False) -> tuple[DocumentMetadata, list[ExtractionAnomaly]]:
     fields: list[MetadataField] = []
     anomalies: list[ExtractionAnomaly] = []
     try:
-        wb = openpyxl.load_workbook(str(path), read_only=True)
-        props = wb.properties
-        for k in ("creator", "lastModifiedBy", "title", "subject", "description", "keywords", "category",
-                  "company", "lastPrinted", "created", "modified", "revision"):
-            v = getattr(props, k, None)
+        parsed = parsed or parsers.parse_xlsx(path, inspect_cells=not lightweight)
+        for k, v in parsed.properties.items():
             if v:
-                fields.append(_field(builder, doc, f"xlsx.core.{k}", str(v), {"kind": "docx_property", "property": k}))
-        wb.close()
+                fields.append(_field(builder, doc, f"xlsx.core.{k}", str(v), {"kind": "xlsx_property", "property": k}))
+        anomalies.extend(
+            ExtractionAnomaly(document_id=doc.document_id, relative_path=doc.relative_path,
+                              anomaly=iss.kind, detail=iss.detail)
+            for iss in parsed.issues
+        )
     except Exception as exc:  # noqa: BLE001
         anomalies.append(ExtractionAnomaly(document_id=doc.document_id, relative_path=doc.relative_path,
                                            anomaly="metadata_failed", detail=f"XLSX 属性读取失败：{exc}"))

@@ -1,10 +1,13 @@
-"""PaddleOCR 适配器（生产 OCR，方案 §10.4）。
+"""已废弃的兼容层（不属于 tender-clearance Core）。
 
-- 懒加载：仅当 `ocr_provider: paddle` 时导入 paddleocr（重依赖不装也能离线运行）；
+- 保留此文件仅为迁移期兼容和历史测试定位；Core 不导入、不运行本模块；
+- 生产 OCR 应由宿主 Agent 的独立 Provider Skill 提供 `ocr-result.v1`；
 - 引擎进程内单例（模型加载慢，只初始化一次）；
 - 输入为页面渲染的 PNG 字节，输出 (全文, 平均置信度)；
 - OCR 文本进入既有低置信度通道：字段 confidence<1、不参与精确匹配、进人工核对；
 - 本模块不做任何脱敏外加工，脱敏仍由提取/报告层完成。
+
+请勿在 Core 环境中安装或调用此模块；迁移完成后可在 Provider 包中移除。
 """
 
 from __future__ import annotations
@@ -25,9 +28,8 @@ def get_engine(lang: str = "ch"):
         from paddleocr import PaddleOCR  # noqa: PLC0415 - 重依赖按需加载
     except ImportError as exc:  # noqa: TRY302
         raise RuntimeError(
-            "未安装 PaddleOCR：请执行 "
-            "`uv pip install -p .venv/bin/python paddleocr paddlepaddle` "
-            "（或在 project.yaml 将 ocr_provider 改回 none/mock）"
+            "Core 不提供 PaddleOCR；请由宿主 Agent 安装并声明独立 OCR Provider，"
+            "再通过 ocr-result.v1 导入（或将扫描页保留为人工复核）"
         ) from exc
     try:
         _ENGINE = PaddleOCR(use_textline_orientation=True, lang=lang)

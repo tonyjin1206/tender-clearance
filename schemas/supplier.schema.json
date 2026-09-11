@@ -158,7 +158,7 @@
           "type": "string"
         },
         "redaction_mode": {
-          "description": "脱敏模式；当前固定 standard",
+          "description": "输出模式：none 表示按项目授权展示原值，standard 表示脱敏",
           "title": "Redaction Mode",
           "type": "string"
         },

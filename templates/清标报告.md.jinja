@@ -1,293 +1,180 @@
-{# 投标清标报告模板（方案 7）—— 八个固定章节；中性表述，不含完整证件号/手机号 #}
+{# 清标报告固定结构：封面、基本信息、SRM 企业信息、政府采购网、文件线索、结论 #}
 # 投标清标报告：{{ project.project_name }}
 
 ## 1. 封面信息页
 
-| 项目 | 识别结果 |
+| 项目 | 内容 |
 |---|---|
-| 招标人/采购人 | {{ project_identity.tenderer | join('；') or '未从商务标封面第一页取得' }} |
-| 项目名称 | {{ project_identity.project_name | join('；') or '未从商务标封面第一页取得' }} |
-| 项目编号/编码 | {{ project_identity.project_code | join('；') or '未从商务标封面第一页取得' }} |
-| 投标日期 | {{ project_identity.bid_date | join('；') or '未从商务标封面第一页取得' }} |
-| 投标人名单 | {{ summary.supplier_names | join('、') }} |
+| 招标人 | {{ project_identity.tenderer | join('；') or '未取得' }} |
+| 项目名称 | {{ project_identity.project_name | join('；') or project.project_name }} |
+| 项目编号/编码 | {{ project_identity.project_code | join('；') or project.project_id }} |
+| 投标日期 | {{ project_identity.bid_date | join('；') or '未取得' }} |
+| 投标人（公司）名单 | {{ summary.supplier_names | join('、') or '未取得' }} |
 
 ## 2. 基本信息页
 
 ### 2.1 采购项目信息
 
-项目名称：{{ project_identity.project_name | join('；') or '未取得' }}；项目编码：{{ project_identity.project_code | join('；') or '未取得' }}；投标日期：{{ project_identity.bid_date | join('；') or '未取得' }}。
+| 项目名称 | 项目编码 | 投标日期 |
+|---|---|---|
+| {{ project_identity.project_name | join('；') or project.project_name }} | {{ project_identity.project_code | join('；') or project.project_id }} | {{ project_identity.bid_date | join('；') or '未取得' }} |
 
-### 2.2 商务标投标人信息
+### 2.2 标书投标人信息
 
-| 投标人 | 公司名称 | 统一社会信用代码 | 法定代表人 | 法定代表人身份证号 | 授权代表 | 授权代表身份证号 |
+| 投标人 | 公司名称 | 统一社会信用代码 | 法人代表姓名 | 法人代表身份证号 | 授权代表姓名 | 授权代表身份证号 |
 |---|---|---|---|---|---|---|
 {% for r in business_rows -%}
 | {{ r.supplier }} | {{ r.company }} | {{ r.uscc }} | {{ r.legal_name }} | {{ r.legal_id }} | {{ r.agent_name }} | {{ r.agent_id }} |
 {% endfor %}
 
-技术标与一览表不参与上述主体字段识别；文件仍纳入盘点、属性和证据索引。
+字段来源限定为商务标；技术标和一览表只用于文件盘点、属性及扫描线索分析。
 
-## 3. 项目、范围与结论使用说明
+本页主体字段包括：统一社会信用代码、法人代表姓名、法人代表身份证号、授权代表姓名、授权代表身份证号。
 
-| 项目 | 内容 |
-|---|---|
-| 项目编号 | {{ project.project_id }} |
-| 项目名称 | {{ project.project_name }} |
-| 投标截止时间 | {{ summary.deadline_display }} |
-| 运行标识 | {{ run.run_id }} |
-| 运行时间 | {{ run.started_at }} |
-| 工具/规则版本 | 工具 {{ run.tool_version }}；规则 {{ run.rules_version }} |
-| 参与供应商 | {{ summary.supplier_count }} 家（{{ summary.supplier_names | join('、') }}） |
-| 输入文件范围 | 标书 {{ summary.bid_docs }} 份；采购文件 {{ summary.proc_docs }} 份；外部证据文件 {{ summary.ext_dir }} 份 |
-| 外部查询模式 | {{ project.external_query_mode }}{% if project.external_query_sources %}（启用渠道：{{ project.external_query_sources | join('、') }}）{% endif %} |
-| 覆盖缺口 | {{ summary.coverage_gaps }} 项（见第 7 章与查询覆盖表） |
-
-> **结论使用说明**：本报告输出的是风险线索与证据整理结果，不是串通投标、
-> 违法失信或资格不合格的最终认定。所有可能影响废标、否决投标、列入黑名单
-> 或对外披露的结论，必须由采购人或合规人员依据采购文件、适用法规和原始证据
-> 人工复核后作出。带“人工复核必需”标记的条目不得自动化处理。
-> 报告中的证件号码仅以掩码显示，完整号码不出现在任何输出中。
-
-## 4. 执行摘要与预警总览
-
-| 供应商 | I 级（高） | II 级（中） | III 级（低） | 必须人工复核 | 未完成查询 |
-|---|---|---|---|---|---|
-{% for s in summary.supplier_rows -%}
-| {{ s.name }} | {{ s.i }} | {{ s.ii }} | {{ s.iii }} | {{ s.review }} | {{ s.unfinished }} |
-{% endfor %}
-
-> 上表数量为按供应商归集的预警条目数（同一线索涉及多方时在各方分别计入），
-> 不是违法或违规数量，不构成任何定性结论。
-
-### 4.1 查询覆盖矩阵
-
-| 供应商 | {{ summary.coverage_sources | join(' | ') }} |
-{{ summary.coverage_sep }}
-{% for row in summary.coverage_matrix -%}
-| {{ row.supplier }} | {{ row.cells | join(' | ') }} |
-{% endfor %}
-
-{% if summary.headline_findings %}
-### 4.2 报告首页提示（I 级预警，人工复核必需）
-
-{% for f in summary.headline_findings -%}
-- **{{ f.finding_id }}**（规则 {{ f.rule_id }}，证据强度 {{ f.evidence_strength }}）：{{ f.fact }}
-{% endfor %}
-{% endif %}
-
-## 5. 公司信息交叉检查
-
-{% if cross_tables | length == 0 -%}
-未提取到可比对的公司信息。
-{% else -%}
-{% for t in cross_tables -%}
-### 5.{{ loop.index }} {{ t.title }}
-
-| 项 | {{ t.columns | join(' | ') }} |
-{{ t.sep }}
-{% for row in t.rows -%}
-| {{ row.label }} | {{ row.cells | join(' | ') }} |
-{% endfor %}
-
-{% endfor -%}
-{% endif %}
-对应关系明细（含证据定位）见结构化结果 `清标结果.json` 与 `证据索引.csv`。
-
-## 6. 投标文件属性风险检查
-
-{% if metadata_findings | length == 0 -%}
-未发现跨供应商的文件属性同源线索。
-{% else -%}
-| 编号 | 风险域 | 预警 | 证据强度 | 涉及供应商 | 发现事实 | 规则 | 状态 | 建议复核动作 |
-|---|---|---|---|---|---|---|---|---|
-{% for f in metadata_findings -%}
-| {{ f.finding_id }} | {{ f.domain_label }} | {{ f.level_label }} | {{ f.evidence_strength }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.status_label }} | {{ f.recommendation }} |
-{% endfor %}
-
-文件属性读取说明：通用编辑工具、创建时间等“常见或可轻易修改信息”仅作 III 级线索；
-“设备唯一标识”仅指从文件中实际读出的序列号/唯一 ID，不含按型号推断；
-文件系统时间不能单独证明文档创作时间。
-{% endif %}
-
-## 7. SRM 企业信息
-
-### 7.1 工商信息
+## 3. 工商信息（富奥 SRM）
 
 {% for r in srm_registration -%}
-**{{ r.supplier }}**（证据：{{ r.evidence_ids | join('、') or '未提供' }})
+### {{ r.supplier }}
 
+{% if r.fields -%}
 | 企业名称 | 法定代表人 | 注册资本 | 实缴资本 | 成立日期 | 企业状态 | 统一社会信用代码 | 企业类型 | 一级行业 | 二级行业 | 三级行业 | 四级行业 | 营业期限 | 参保人数 | 曾用名 | 注册地址 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| {{ r.fields.get('企业名称','未返回') }} | {{ r.fields.get('法定代表人','未返回') }} | {{ r.fields.get('注册资本','未返回') }} | {{ r.fields.get('实缴资本','未返回') }} | {{ r.fields.get('成立日期','未返回') }} | {{ r.fields.get('企业状态','未返回') }} | {{ r.fields.get('统一社会信用代码','未返回') }} | {{ r.fields.get('企业类型','未返回') }} | {{ r.fields.get('一级行业','未返回') }} | {{ r.fields.get('二级行业','未返回') }} | {{ r.fields.get('三级行业','未返回') }} | {{ r.fields.get('四级行业','未返回') }} | {{ r.fields.get('营业期限','未返回') }} | {{ r.fields.get('参保人数','未返回') }} | {{ r.fields.get('曾用名','未返回') }} | {{ r.fields.get('注册地址','未返回') }} |
+| {{ r.fields.get('企业名称','未返回') }} | {{ r.fields.get('法定代表人','未返回') }} | {{ r.fields.get('注册资本','未返回') }} | {{ r.fields.get('实缴资本','未返回') }} | {{ r.fields.get('成立日期','未返回') }} | {{ r.fields.get('企业状态','未返回') }} | {{ r.fields.get('统一社会信用代码','未返回') }} | {{ r.fields.get('企业类型','未返回') }} | {{ r.fields.get('一级行业', r.fields.get('行业大类','未返回')) }} | {{ r.fields.get('二级行业','未返回') }} | {{ r.fields.get('三级行业','未返回') }} | {{ r.fields.get('四级行业','未返回') }} | {{ r.fields.get('营业期限','未返回') }} | {{ r.fields.get('参保人数','未返回') }} | {{ r.fields.get('曾用名','未返回') }} | {{ r.fields.get('注册地址', r.fields.get('地址','未返回')) }} |
 {% else -%}
-未取得 SRM 工商信息：查询未返回已确认的 registration 记录；详见查询覆盖状态。
-{% endfor %}
+SRM 查询状态：{{ r.query_status }}。登录成功但未取得工商记录时，保留该状态，不解释为无风险。
+{% endif -%}
+证据：{{ r.evidence_ids | join('、') or '无记录证据' }}
 
-工商信息交叉校验结果：{{ '已取得并完成重复值检查' if srm_registration else '未取得，无法进行交叉校验' }}。不把未取得解释为无重复。
+{% endfor -%}
+工商信息交叉校验结果：{{ srm_duplicate_checks['工商信息'] }}。
 
-### 7.2 股东信息
+## 4. 股东信息（富奥 SRM）
 
 {% if srm_ownership -%}
 | 投标人 | 股东名称 | 投资金额 | 认缴时间 | 认缴比例 | 认缴出资方式 | 证据 |
 |---|---|---|---|---|---|---|
 {% for r in srm_ownership -%}
-| {{ r.supplier }} | {{ r.shareholder }} | {{ r.amount }} | {{ r.time }} | {{ r.ratio }} | {{ r.method }} | {{ r.evidence_ids | join('、') }} |
-{% endfor %}
+| {{ r.supplier }} | {{ r.shareholder }} | {{ r.amount }} | {{ r.time }} | {{ r.ratio }} | {{ r.method }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor -%}
 {% else -%}
-未取得 SRM 股东明细；不能据此判断无股东或无重复。
+未取得 SRM 股东记录；不能据此判断无股东或无重复。
 {% endif %}
 
-股东信息交叉校验结果：{{ '已取得并完成重复值检查' if srm_ownership else '未取得，无法进行交叉校验' }}。
+股东信息交叉校验结果：{{ srm_duplicate_checks['股东信息'] }}。
 
-### 7.3 分支机构
+## 5. 分支机构（富奥 SRM）
 
 {% if srm_branches -%}
-{{ srm_branches }}
+| 投标人 | 企业名称 | 成立日期 | 企业状态 | 法人 | 证据 |
+|---|---|---|---|---|---|
+{% for r in srm_branches -%}
+| {{ r.supplier }} | {{ r.fields.get('企业名称','未返回') }} | {{ r.fields.get('成立日期','未返回') }} | {{ r.fields.get('企业状态','未返回') }} | {{ r.fields.get('法人','未返回') }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor -%}
 {% else -%}
-未取得 SRM 分支机构结构化明细；当前结果不等于无分支机构。
+未取得 SRM 分支机构结构化记录；不能据此判断无分支机构。
 {% endif %}
 
-### 7.4 主要人员
+分支机构交叉校验结果：{{ srm_duplicate_checks['分支机构'] }}。
+
+## 6. 主要人员（富奥 SRM）
 
 {% if srm_personnel -%}
-{{ srm_personnel }}
+| 投标人 | 姓名 | 职位 | 证据 |
+|---|---|---|---|
+{% for r in srm_personnel -%}
+| {{ r.supplier }} | {{ r.fields.get('姓名','未返回') }} | {{ r.fields.get('职位','未返回') }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor -%}
 {% else -%}
-未取得 SRM 主要人员结构化明细；当前结果不等于无主要人员。
+未取得 SRM 主要人员结构化记录；不能据此判断无主要人员。
 {% endif %}
 
-### 7.5 SRM 交叉校验结果
+主要人员交叉校验结果：{{ srm_duplicate_checks['主要人员'] }}。
 
-工商信息、股东信息、分支机构和主要人员分别按投标人检查重复；未返回、未登录、主体未确认或页面结构化失败的项目均标为“无法校验”，不推定为无重复。
+## 7. 政府采购网失信信息及证据截图
 
-## 8. 股权关系与司法经营风险
+查询入口：<http://219.143.74.201/search/cr/>；查询方式：按投标人名称查询。
 
-### 8.1 股权关系
-
-{% if ownership | length == 0 -%}
-无导入的股权关系数据（未导入不等于无关联，见查询覆盖表）。
-{% else -%}
-| 关系 | 出资人/出资企业 | 目标企业 | 比例 | 起始日 | 截止日 | 主体确认 | 证据 |
-|---|---|---|---|---|---|---|---|
-{% for o in ownership -%}
-| {{ o.relation_id }} | {{ o.from_label }} | {{ o.to_company_name }} | {{ o.share_ratio if o.share_ratio is not none else '—' }} | {{ o.relation_date or '—' }} | {{ o.relation_end_date or '—' }} | {{ o.confirmation_label }} | {{ o.evidence_ids | join(', ') }} |
-{% endfor %}
-{% endif %}
-
-### 8.2 司法经营风险
-
-{% if judicial_rows | length == 0 -%}
-无导入的司法/经营风险记录（未导入不等于无风险，见查询覆盖表）。
-{% else -%}
-| 供应商 | 记录 | 主体确认 | 摘要 | 证据 |
-|---|---|---|---|---|
-{% for r in judicial_rows -%}
-| {{ r.supplier }} | {{ r.record_id }} | {{ r.confirmation_label }} | {{ r.desc }} | {{ r.evidence_ids | join(', ') }} |
-{% endfor %}
-{% endif %}
-
-### 8.3 股权与司法相关发现
-
-{% if ownership_judicial_findings | length == 0 -%}
-无对应发现。
-{% else -%}
-| 编号 | 预警 | 证据强度 | 涉及供应商 | 发现事实 | 规则 | 状态 |
-|---|---|---|---|---|---|---|
-{% for f in ownership_judicial_findings -%}
-| {{ f.finding_id }} | {{ f.level_label }} | {{ f.evidence_strength }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.status_label }} |
-{% endfor %}
-{% endif %}
-
-## 9. 违法失信信息
-
-> 以下仅列示已查询/导入渠道的记录与查询状态。“not_queried（未查询）”“blocked（受阻）”
-> “failed（失败）”均不等于“无失信记录”。
-
-{% for src in dishonesty_sources -%}
-### 9.{{ loop.index }} {{ src.label }}
-
+{% for src in dishonesty_sources if src.label == '中国政府采购网' -%}
 查询状态：{% for s in src.status_rows %}{{ s.line }}{% if not loop.last %}；{% endif %}{% endfor %}
 
-{% if src.records | length == 0 -%}
-无命中记录（仅指本渠道当前查询/导入范围内）。
-
-{% else -%}
-| 供应商 | 项目/行为 | 处罚/处理 | 依据/文号 | 日期 | 有效期 | 主体确认 | 证据 |
-|---|---|---|---|---|---|---|---|
+{% if src.records -%}
+| 投标人 | 失信信息 | 处理结果 | 依据/文号 | 日期 | 有效期 | 证据 |
+|---|---|---|---|---|---|---|
 {% for r in src.records -%}
-| {{ r.supplier }} | {{ r.behavior }} | {{ r.penalty }} | {{ r.reference }} | {{ r.date }} | {{ r.validity }} | {{ r.status }} | {{ r.evidence_ids | join(', ') }} |
+| {{ r.supplier }} | {{ r.behavior }} | {{ r.penalty }} | {{ r.reference }} | {{ r.date }} | {{ r.validity }} | {{ r.evidence_ids | join('、') }} |
 {% endfor %}
-
-### 9.1 中国政府采购网证据截图
+{% else -%}
+当前没有可列示的政府采购网失信记录；未查询、受阻或失败不等于无失信记录。
+{% endif %}
+{% endfor %}
 
 {% if government_screenshots -%}
 {% for s in government_screenshots -%}
-证据：{{ s.ref }}
-{% endfor %}
+证据文件：{{ s.ref }}
+{% if s.image %}![政府采购网查询证据截图]({{ s.image }}){% endif %}
+
+{% endfor -%}
 {% else -%}
-未取得政府采购网截图证据文件；当前查询状态和结构化结果不能替代截图，需人工在指定查询页按供应商名称查询并导入截图。
+未取得政府采购网截图文件；请补充按投标人名称查询的原始截图。
 {% endif %}
 
-{% endif -%}
-{% endfor %}
-相关发现：
+## 8. PDF、Office 与扫描件文件线索
 
-{% if dishonesty_findings | length == 0 -%}
-无对应发现。
+{% if metadata_findings -%}
+| 编号 | 风险域 | 预警 | 证据强度 | 涉及投标人 | 发现事实 | 规则 | 状态 | 建议复核动作 |
+|---|---|---|---|---|---|---|---|---|
+{% for f in metadata_findings -%}
+| {{ f.finding_id }} | {{ f.domain_label }} | {{ f.level_label }} | {{ f.evidence_strength }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.status_label }} | {{ f.recommendation }} |
+{% endfor %}
 {% else -%}
-| 编号 | 预警 | 证据强度 | 涉及供应商 | 发现事实 | 规则 | 状态 | 与采购条款关系 |
-|---|---|---|---|---|---|---|---|
-{% for f in dishonesty_findings -%}
-| {{ f.finding_id }} | {{ f.level_label }} | {{ f.evidence_strength }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.status_label }} | {{ f.clause_note or '待采购人确认' }} |
+未发现跨投标人的文件属性、编辑痕迹或扫描设备同源线索。
+{% endif %}
+
+文件属性、编辑工具、创建时间、PDF XMP、Office 属性和扫描设备信息均为证据线索；常见或可修改属性不得单独作否决性判断。
+
+## 9. 清标结论与三级预警
+
+| 投标人 | I 级（高） | II 级（中） | III 级（低） | 必须人工复核 |
+|---|---|---|---|---|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.i }} | {{ s.ii }} | {{ s.iii }} | {{ s.review }} |
+{% endfor %}
+
+{% if summary.headline_findings -%}
+### I 级预警（人工复核必需）
+{% for f in summary.headline_findings -%}
+- **{{ f.finding_id }}**（规则 {{ f.rule_id }}，证据强度 {{ f.evidence_strength }}）：{{ f.fact }}
 {% endfor %}
 {% endif %}
 
-## 10. 人工复核与待补资料
+### 查询状态
 
-### 7.1 人工复核必需的风险发现
+| 投标人 | 富奥 SRM | 中国政府采购网 |
+|---|---|---|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.srm_status }} | {{ s.gov_status }} |
+{% endfor %}
 
-{% if review_findings | length == 0 -%}
-无。
-{% else -%}
-| 编号 | 预警 | 涉及供应商 | 发现事实 | 规则 | 证据强度 | 建议复核动作 |
+本报告输出的是可复核、可追溯的风险线索与证据整理结果，不是串通投标、违法失信、资格不合格或废标的最终认定；任何最终认定必须由采购人或合规人员人工复核后作出。查询成功但无匹配记录仅说明本次查询未取得记录，不作“无风险”结论。
+
+## 10. 证据与人工复核
+
+{% if review_findings -%}
+| 编号 | 预警 | 涉及投标人 | 事实 | 规则 | 证据强度 | 建议动作 |
 |---|---|---|---|---|---|---|
 {% for f in review_findings -%}
 | {{ f.finding_id }} | {{ f.level_label }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.evidence_strength }} | {{ f.recommendation }} |
 {% endfor %}
+{% else -%}
+无强制人工复核发现。
 {% endif %}
 
-### 7.2 资料与处理缺口
+### 待补资料
 
 {% for item in review_gaps -%}
 - {{ item }}
 {% else -%}
-- 无。
+- 暂无。
 {% endfor %}
 
-## 11. 附录
-
-### 8.1 输入文件清单与哈希
-
-| 文件 | 类别 | 大小 | 哈希（SHA-256 前 16 位） | 状态 |
-|---|---|---|---|---|
-{% for d in appendix.documents -%}
-| {{ d.relative_path }} | {{ d.category }} | {{ d.size_bytes }} | {{ d.short_sha }} | {{ d.status }}{% if d.detail %}（{{ d.detail }}）{% endif %} |
-{% endfor %}
-
-### 8.2 版本与规则
-
-- 工具版本：{{ run.tool_version }}；规则版本：{{ run.rules_version }}
-- 规则清单：{{ appendix.rule_ids | join('、') }}
-- 证件号处理：仅保存受控比对摘要（盐指纹 {{ run.id_digest_salt_fingerprint }}）与展示掩码；完整号码不写入结果、日志与异常信息。
-
-### 8.3 查询日志摘要
-
-| 渠道 | 供应商 | 状态 | 查询方式 | 时间 | 说明 |
-|---|---|---|---|---|---|
-{% for q in appendix.queries -%}
-| {{ q.source }} | {{ q.supplier }} | {{ q.status }} | {{ q.mode }} | {{ q.queried_at or '—' }} | {{ q.detail or '' }} |
-{% endfor %}
-
-### 8.4 脱敏说明
-
-本报告及全部结构化输出不含完整身份证号、手机号等个人敏感信息；证件号仅保留掩码
-与受控摘要。原始受控证据应由项目数据权限系统保存，不由本工具复制。
+所有结论均通过 `证据索引.csv` 的 evidence ID 回溯到标书文件、SRM 页面引用、政府采购网截图或授权导入材料；完整输入文件清单和 SHA-256 见结构化结果及工作底稿。

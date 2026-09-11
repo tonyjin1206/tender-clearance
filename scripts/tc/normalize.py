@@ -3,7 +3,8 @@
 原则（方案 5.3）：
 - 保留原文，只派生“检索键 / 比对键”；名称相似只是候选匹配。
 - 统一社会信用代码校验长度与校验位，不合格记“格式异常”，不自动纠正。
-- 证件号只输出受控比对摘要与展示掩码，完整号码不进入任何输出。
+- 证件号提供受控比对摘要与展示掩码；最终输出是否保留原值由项目 `redaction_mode`
+  和调用方授权决定，日志与异常仍不得包含凭据。
 """
 
 from __future__ import annotations
@@ -199,10 +200,10 @@ def mask_id_number(raw: str) -> str:
 
 
 def id_digest(raw: str, salt: str = _DEFAULT_ID_SALT) -> str:
-    """受控比对摘要：sha256(salt + 完整号码) 前 16 位十六进制。
+    """按项目盐生成受控比对摘要：sha256(salt + 完整号码) 前 16 位十六进制。
 
     盐来自 project.yaml 的 id_digest_salt（项目内固定），保证同项目可重复运行、
-    跨项目不可直接反查。完整号码本身不进入任何输出、日志或异常。
+    跨项目不可直接反查。调用方仍须按 redaction_mode 决定展示原值或摘要。
     """
     digits = re.sub(r"\s", "", to_halfwidth(raw)).upper()
     return hashlib.sha256((salt + digits).encode("utf-8")).hexdigest()[:16]

@@ -4,7 +4,7 @@
   STSong-Light（无需字体文件）；正文 CJK 换行；
 - 支持报告所需元素：多级标题、段落、无序列表、表格（表头底纹、按内容分配列宽、
   单元格内自动换行）、分隔线、引用块与行内 **加粗**；
-- 输入为已脱敏的报告 Markdown（render_report.py 产物），本模块不做二次脱敏。
+- 输入为报告 Markdown（render_report.py 产物），本模块不改变报告的脱敏模式，也不做二次脱敏。
 """
 
 from __future__ import annotations
@@ -16,11 +16,12 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (HRFlowable, PageBreak, Paragraph, SimpleDocTemplate,
-                                Spacer, Table, TableStyle)
+from reportlab.platypus import (HRFlowable, Image as ReportImage, PageBreak, Paragraph,
+                                SimpleDocTemplate, Spacer, Table, TableStyle)
 
 _FONT_CANDIDATES = [
     ("ReportSongti", "/System/Library/Fonts/Supplemental/Songti.ttc", 0),
@@ -109,7 +110,7 @@ def _col_widths(rows: list[list[str]], usable: float) -> list[float]:
     return widths
 
 
-def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告") -> Path:
+def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告", base_dir: Path | None = None) -> Path:
     styles = _styles()
     doc = SimpleDocTemplate(str(out_path), pagesize=A4,
                             leftMargin=2 * cm, rightMargin=2 * cm,
@@ -125,6 +126,24 @@ def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告") -> Path
         stripped = line.strip()
 
         if not stripped:
+            i += 1
+            continue
+
+        image_match = re.match(r"^!\[[^]]*\]\(([^)]+)\)$", stripped)
+        if image_match:
+            image_ref = image_match.group(1).strip().strip("<>")
+            image_path = (base_dir or out_path.parent) / image_ref
+            if image_path.is_file() and image_path.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                try:
+                    width, height = ImageReader(str(image_path)).getSize()
+                    max_width, max_height = usable, 12 * cm
+                    scale = min(max_width / width, max_height / height, 1.0)
+                    story.append(ReportImage(str(image_path), width=width * scale, height=height * scale))
+                    story.append(Spacer(1, 6))
+                except Exception:  # noqa: BLE001 - 图片损坏时保留文字报告
+                    story.append(Paragraph(_inline(stripped), styles["body"]))
+            else:
+                story.append(Paragraph(_inline(stripped), styles["body"]))
             i += 1
             continue
 
@@ -193,5 +212,3 @@ def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告") -> Path
 
     doc.build(story)
     return out_path
-
-

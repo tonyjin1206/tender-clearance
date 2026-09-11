@@ -5,98 +5,127 @@ description: 汇总同一采购项目多家供应商标书，交叉检查企业�
 
 # 投标清标（tender-clearance）
 
-对同一采购项目的多家供应商标书做交叉检查：先盘点并分类商务标、技术标和一览表；
-公共信息只从投标文件封面第一页提取，投标人身份字段只从商务标提取，技术标和一览表
-不做主体字段识别；再结合富奥 SRM 与中国政府采购网的真实、可追溯证据，输出按三级
-预警（I 高 / II 中 / III 低）展示的清标报告。
-**输出是风险线索与证据整理结果，不是违法或资格认定**；I 级与主体歧义项必须人工复核。
+对同一采购项目的多家供应商标书做文件盘点、主体与文件属性交叉检查、
+外部证据覆盖整理和确定性风险规则评估，输出 JSON、Markdown、PDF、CSV
+以及按需的 DOCX/Excel。结果始终是风险线索与证据整理，不自动作出串标、
+违法失信、资格不合格或废标结论；I 级和主体歧义项必须人工复核。
 
-## 前置：向用户确认的信息
+## 核心边界
 
-开始前应让用户提供（缺失时技能仍可离线运行，但相关能力受限）：
+- Core 只处理本地输入、已授权导入物、版本化规则和已缓存结果；不联网、不安装
+  OCR/浏览器依赖、不运行 OCR 模型。
+- 扫描页由宿主 Agent 的 OCR Skill 处理。Core 生成 `ocr-job.v1`，只接受通过
+  `ocr-result.v1` 校验的结果；无结果、低置信度、无坐标或校验失败都进入人工复核。
+- SRM 是正式报告的前置门禁。正式报告前必须由用户提供 SRM 用户名和密码，
+  在当前运行时登录并按公司名称 + 统一社会信用代码完成查询；登录成功但没有匹配信息
+  可以继续生成报告，`blocked`、`failed`、`not_queried`、`needs_manual_review` 或只导入
+  历史文件均不能替代本次查询。
+- 不因同一模板、编辑工具、扫描仪型号、时间或名称相近单独认定串标。
+- `blocked`、`failed`、`not_queried`、`needs_manual_review` 不得写成“无风险”；
+  登录成功后的 `no_result` 只能表述为“本次查询未取得记录”。
+- 用户授权的报告可按 `project.yaml` 的 `redaction_mode: none` 展示完整身份证号和手机号；
+  密码、Cookie、令牌永远不得进入输出、日志、OCR 任务或异常。
 
-1. 项目目录（含 `project.yaml`、`bids/<供应商>/…`、`procurement/`、`external-evidence/`）；
-2. 投标截止时间（写入 `project.yaml` 的 `bid_deadline`；缺失则禁止产生“处罚处于有效期内”的结论）；
-3. 采购文件中的资格/否决条款来源（`procurement_rules_source`）；可选：
-   运行 `scripts/draft_procurement_clauses.py` 从 procurement/ 生成条款映射草案，
-   人工确认后设 `procurement_clauses_mapping`，命中发现会自动附对应条款引用；
-4. 外部查询方式：`offline`（默认，不联网）/ `manual_import`（仅导入证据）/ `live`（仅访问 `external_query_sources` 明确启用的渠道）；
-5. `external-evidence/` 下是否已有人工查询证据（JSON/CSV/快照+meta）。
+## 开始前确认
 
-### 本版识别范围（必须执行）
-
-- 公共信息：招标人/采购人、项目名称、项目编号/编码、投标日期；只接受投标文件封面第一页，未能证明为封面的正文命中不得作为公共信息。
-- 商务标：公司名称、统一社会信用代码、法定代表人姓名及证件掩码、授权代表姓名及证件掩码。
-- 技术标：不提取主体、联系人或项目公共字段；只盘点文件并检查文件属性/证据状态。
-- 一览表：不提取主体、联系人或项目公共字段；只盘点文件并检查文件属性/证据状态。
-- SRM 工商、股东、分支机构、主要人员：只展示页面或授权导出实际返回的字段；未返回、未登录、权限受阻、页面无法结构化要分别记录，不能填“无”。
-- 政府采购网：按供应商名称查询用户指定入口 `http://219.143.74.201/search/cr/`；需要截图时只引用实际导入/保存的证据截图，不以自动化摘要冒充截图。
-
-渠道范围（2026-09-09 决策）：**外部仅保留中国政府采购网，内部仅保留富奥 SRM**；
-信用中国、军队采购网、公开工商信息、司法公开信息渠道已移除。
-中国政府采购网的失信名单查询已接入自动化（`external_query_mode: live` +
-`external_query_sources: [government_procurement]`，限速 ≥5 秒/次，仅查询本项目供应商，
-无需账号密码）。富奥 SRM 为内网系统，浏览器会话模式默认无头后台：让用户在对话中
-提供账号密码，**仅在本会话内存中使用，绝不写入任何文件、输出或日志**；
-也可让用户从 SRM 导出授权文件放入 `external-evidence/srm-authorized-export/` 后离线导入。
-
-### 富奥 SRM 浏览器会话模式
-
-需要查询 SRM 企业画像时，使用 `scripts/tc/srm_browser.py` 的 `SrmBrowserClient`，
-由宿主的浏览器能力实现 `SrmBrowserDriver`。该模式不调用 `requests`、`curl`、
-`fetch` 或已观察的 SRM XHR；浏览器只负责打开页面、输入运行时凭据、导航供应商画像、
-读取可见页面，适配器负责状态机和结构化结果。
-
-- 用户名、密码仅通过运行时回调提供，登录结束后清空；不得进入配置、日志、异常或结果；
-- 遇验证码、登录墙、权限阻断或主体无法确认，分别返回 `blocked` 或
-  `needs_manual_review`，不得重试绕过；
-- 空 XHR、空分类或页面无法结构化不等于“无风险”，返回 `no_result` 并保留页面证据引用；
-- 查询模式记录为 `browser_session`，页面事实与捕获的 XHR 必须分开标记；
-- 该浏览器适配器不得接入 `srm.py` 的 HTTP/token 客户端。
-
-## 工作流
-
-1. **先读三份参考**：`references/workflow.md`、`references/data-contract.md`、
-   `references/evidence-and-risk-rules.md`；涉及外部查询再读 `references/external-sources.md`；
-   生成报告前读 `references/report-spec.md`。
-2. **创建项目清单与哈希，再做提取**（顺序不可颠倒）：
+先执行只读预检，宿主应把 JSON 计划一次性展示给用户，再集中确认范围、缺失依赖、OCR
+Provider 和 SRM 授权；确认前不得安装依赖或启动正式流水线：
 
 ```bash
-python scripts/inventory.py <project_dir>
-python scripts/extract_content.py <project_dir>
-python scripts/extract_metadata.py <project_dir>
-python scripts/normalize_and_match.py <project_dir>
-python scripts/import_external_evidence.py <project_dir>
-python scripts/query_sources.py <project_dir>
-python scripts/assess_risk.py <project_dir>
-python scripts/render_report.py <project_dir>
-python scripts/render_worksheet.py <project_dir>      # 生成 清标底稿.xlsx（可选）
-python scripts/validate_project.py <project_dir> --stage final
+$PY scripts/preflight.py $P --profile report
 ```
 
-   （`python` 使用本 Skill 的 `.venv/bin/python`，或已安装 `pyproject.toml` 依赖的环境。）
+预检完成后，所有确认的安装项一次性处理；后续阶段不调用 `input()`/`getpass()`，不在
+报告渲染期间安装依赖或临时联网。SRM 凭据应在流水线启动前通过运行时环境提供，缺少凭据
+直接阻断，不在中途询问。
 
-3. **行为约束**：
-   - 用统一社会信用代码优先识别企业；只有名称时形成候选，禁止把候选合并为同一主体；
-   - 所有标书事实必须有证据定位（页码/单元格/属性/URL），所有规则命中必须带规则编号，
-     所有外部结论必须带渠道、查询时间、主体键、状态和原始证据；
-   - 外部查询默认只读；遇到验证码、登录墙、访问控制或不明确授权 → 停止自动化，
-     生成“待人工查询/导入证据”任务（状态 `blocked`/`needs_manual_review`），
-     不得绕过任何人机校验、登录或限频；
-   - 在生成正式报告前运行 `validate_project.py`；
-   - 报告同时输出 `清标结果.json`（验收基准）、`清标报告.md` + `清标报告.pdf`（审阅版）、
-     `证据索引.csv`、`人工复核清单.csv`，DOCX 为可选展示副本；
-   - 对 I 级与主体歧义项，在报告中显示“人工复核必需”。
-4. **失败与空结果不得美化**：`not_queried`/`blocked`/`failed`/`no_result` 都不能写成
-   “未发现风险”或“无失信记录”；OCR 低置信度字段不参与精确匹配，只进人工核对。
-   可选 `ocr_provider: paddle`（需安装 paddleocr/paddlepaddle）对扫描页本地 OCR，
-   字段置信度取 OCR 平均分并强制低置信度。
+1. 项目目录：含 `project.yaml`、`bids/<供应商>/`、`procurement/` 和可选
+`external-evidence/`。
+2. `project.yaml` 中的 `bid_deadline`、`procurement_rules_source`、
+   `external_query_mode: live` 和包含 `srm` 的 `external_query_sources`。
+3. 开始 SRM 查询前向用户获取用户名和密码；缺少任一项就继续请求，不进入报告阶段。
+4. 是否已有人工导入的 OCR 结果或外部证据；缺失时必须如实展示缺口。
 
-## 边界（不得执行）
+公共信息只从投标文件封面第一页提取；公司名称、统一社会信用代码、法定代表人、
+授权代表及证件字段只从商务标提取；技术标和一览表只盘点文件、属性和证据状态。
 
-- 不创建、修改或提交供应商档案、失信名单、评审结论；
-- 不绕过网站登录、验证码、反爬、付费墙或访问限制；
-- 不根据单一弱线索（同编辑软件、相近时间、同型号扫描仪）直接认定串通投标；
-- 不在输出、日志、异常中保存完整身份证号、手机号、银行账户、密码或 Cookie；
-- 不用模型判断修改规则引擎输出的预警等级（等级只能由 `rules/risk-rules.yaml` 的
-  确定性规则产生）。
+## 标准流程
+
+先读 `references/workflow.md`、`references/data-contract.md`、
+`references/evidence-and-risk-rules.md`；涉及外部渠道再读
+`references/external-sources.md`；生成报告前读 `references/report-spec.md`。
+
+```bash
+PY=<本 Skill 环境>/bin/python
+P=<项目目录>
+
+$PY scripts/preflight.py       $P --profile report
+$PY scripts/inventory.py          $P
+$PY scripts/extract_documents.py $P
+$PY scripts/normalize_and_match.py $P
+$PY scripts/import_external_evidence.py $P
+$PY scripts/query_sources.py        $P   # 必须登录 SRM；无结果仍会写入 no_result
+$PY scripts/assess_risk.py        $P
+$PY scripts/render_report.py      $P --profile report
+$PY scripts/validate_project.py   $P --stage final
+```
+
+`extract_documents.py` 只解析一次本地文档并生成 `output/interim/ocr-jobs.json`；同一源文件
+的底层解析快照可供内容和属性阶段复用，阶段结果仍按文档身份与配置校验，避免同内容副本
+串用路径或供应商信息。文件名识别为 `技术标` 的标书跳过正文、表格、媒体和 OCR，仅保留
+盘点及轻量属性状态。
+宿主 OCR 完成后导入：
+
+```bash
+$PY scripts/import_ocr_results.py $P --input <ocr-results.json>
+$PY scripts/normalize_and_match.py $P
+$PY scripts/assess_risk.py        $P
+$PY scripts/render_report.py      $P --profile report
+```
+
+SRM 查询必须在报告前执行：
+
+```bash
+$PY scripts/query_sources.py $P
+```
+
+输出档位：
+
+- `report`：JSON、Markdown、PDF、证据索引 CSV、人工复核 CSV；
+- `review`：`report` + DOCX；
+- `workpaper`：`review` + Excel 工作底稿。
+
+档位产物写入 `output/exports/<profile>/`；根目录保留验收基准文件。
+
+## OCR 契约
+
+宿主必须声明 `ocr.capabilities.v1`，至少包含 provider、版本、处理位置、输入格式、
+`zh-Hans`/英文/数字能力、置信度、坐标精度、模型名和推理引擎。任务与结果必须分别
+满足 `ocr-job.v1` 和 `ocr-result.v1`；Core 校验契约版本、任务 ID、文档 ID、文件哈希、
+页号、处理位置和失败状态，失败结果必须含不含敏感信息的 `detail`。
+
+Core 只接受 `succeeded`、`failed`、`blocked`、`not_supported`、`cancelled` 五种结果状态。
+有坐标时字段标签和值按空间邻近关系配对；`page_only` 只能产生低置信度候选。
+OCR 结果默认不参与 I/II 级精确主体匹配，除非人工确认后形成新的可靠证据。
+
+生产 OCR 不属于本 Skill 的安装包。推荐的独立 Provider Profile 是
+PaddleOCR `PP-OCRv4_mobile_det` + `PP-OCRv4_mobile_rec`，以 ONNX Runtime CPU
+处理；这是 Provider 选择，不是 Core 依赖，也不能在报告运行时临时安装。
+
+## 外部证据
+
+当前只保留中国政府采购网公开查询和富奥 SRM 授权证据/浏览器会话。正式报告必须使用
+用户本次提供的 SRM 凭据完成登录查询；凭据只存在当前运行时内存。登录墙、验证码、
+权限阻断或主体无法确认分别记录为 `blocked` / `needs_manual_review`，不重试绕过；
+登录成功但无匹配信息记录为 `no_result`，允许继续报告但不得写成无风险。
+
+所有发现必须带规则 ID、主体、事实、证据 ID/定位、证据强度、预警等级、状态和人工复核
+要求；证据强度与预警等级分开。投标截止时间缺失时禁止产生“处罚处于有效期内”的结论。
+
+## 参考与安装
+
+- OCR、缓存与失败状态：`references/data-contract.md`
+- 阶段边界与增量运行：`references/workflow.md`
+- 外部证据：`references/external-sources.md`
+- 报告和输出档位：`references/report-spec.md`
+- Core/Provider/SRM 分层安装：`INSTALL.md`、`requirements-core.txt`

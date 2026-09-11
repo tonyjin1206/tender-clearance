@@ -67,11 +67,44 @@ def ensure_output_dirs(project_dir: Path) -> tuple[Path, Path]:
     out = project_dir / "output"
     interim = out / "interim"
     interim.mkdir(parents=True, exist_ok=True)
+    (out / "cache" / "document").mkdir(parents=True, exist_ok=True)
+    (out / "cache" / "ocr").mkdir(parents=True, exist_ok=True)
+    (out / "cache" / "external").mkdir(parents=True, exist_ok=True)
+    (out / "exports").mkdir(parents=True, exist_ok=True)
     return out, interim
 
 
 def salt_fingerprint(salt: str) -> str:
     return hashlib.sha256(salt.encode("utf-8")).hexdigest()[:8]
+
+
+DOCUMENT_CACHE_VERSION = "document-cache.v2"
+
+
+def document_cache_key(doc: Any, cfg: Any, stage: str) -> str:
+    """返回阶段结果缓存指纹，避免相同文件内容串用不同文档语义。
+
+    文件内容用 SHA-256 定位底层解析快照；内容/属性结果还受文件名分类、文档
+    身份和脱敏配置影响，不能只按源文件哈希复用。该指纹不包含盐本身，只包含
+    盐指纹。
+    """
+    return stable_id(
+        "DC",
+        {
+            "version": DOCUMENT_CACHE_VERSION,
+            "stage": stage,
+            "document_id": getattr(doc, "document_id", None),
+            "relative_path": getattr(doc, "relative_path", None),
+            "supplier_dir": getattr(doc, "supplier_dir", None),
+            "category": getattr(doc, "category", None),
+            "bid_subtype": getattr(doc, "bid_subtype", None),
+            "media_type": getattr(doc, "media_type", None),
+            "redaction_mode": getattr(cfg, "redaction_mode", None),
+            "id_digest_salt_fingerprint": salt_fingerprint(getattr(cfg, "id_digest_salt", "")),
+            "ocr_provider": getattr(cfg, "ocr_provider", None),
+        },
+        length=16,
+    )
 
 
 def make_run_info(cfg: ProjectConfig, rules_version: str) -> RunInfo:
@@ -116,11 +149,12 @@ def evidence_id_for(source_type: str, document_id: str | None, location: dict, f
 
 
 class EvidenceBuilder:
-    """集中创建证据：稳定 ID、强制脱敏、统一采集时间。"""
+    """集中创建证据：稳定 ID、按项目模式处理敏感值、统一采集时间。"""
 
-    def __init__(self, run: RunInfo, salt: str) -> None:
+    def __init__(self, run: RunInfo, salt: str, redaction_mode: str | None = None) -> None:
         self.run = run
         self.salt = salt
+        self.redaction_mode = redaction_mode or run.redaction_mode or "standard"
         self._items: list[Evidence] = []
 
     def add(
@@ -140,11 +174,11 @@ class EvidenceBuilder:
         sensitive_id: str | None = None,
         sensitive_phone: str | None = None,
     ) -> Evidence:
-        """sensitive_id / sensitive_phone：出现于摘录中的完整敏感值，将被掩码替换。"""
+        """按项目输出模式保留原值或替换敏感值。"""
         display = raw_value
-        if sensitive_id:
+        if self.redaction_mode != "none" and sensitive_id:
             display = display.replace(sensitive_id, mask_id_number(sensitive_id))
-        if sensitive_phone:
+        if self.redaction_mode != "none" and sensitive_phone:
             display = redact_text(display, [], [sensitive_phone])
         ev_id = evidence_id_for(source_type, document_id, location, field, method, display)
         ev = Evidence(

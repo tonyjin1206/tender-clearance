@@ -1,28 +1,35 @@
-# 投标清标 Skill 生产安装包
+# tender-clearance 安装分层
 
-需要 Python 3.12+。
+## Core（Windows PowerShell）
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
+Core 只负责本地文件盘点、一次性解析、OCR 契约导入、确定性规则和报告。
+它不安装 OCR 模型、浏览器或外部查询客户端。
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-core.txt
 ```
 
-扫描件 OCR：`.venv/bin/python -m pip install -e "[ocr]"`。
+## 按需扩展
 
-项目目录需包含 `project.yaml`、`bids/`，可选 `procurement/` 与 `external-evidence/`。
-
-```bash
-PY=.venv/bin/python
-$PY scripts/inventory.py <项目目录>
-$PY scripts/extract_content.py <项目目录>
-$PY scripts/extract_metadata.py <项目目录>
-$PY scripts/normalize_and_match.py <项目目录>
-$PY scripts/import_external_evidence.py <项目目录>
-$PY scripts/query_sources.py <项目目录>
-$PY scripts/assess_risk.py <项目目录>
-$PY scripts/render_report.py <项目目录>
-$PY scripts/render_worksheet.py <项目目录>
-$PY scripts/validate_project.py <项目目录> --stage final
+```powershell
+.\.venv\Scripts\python.exe -m pip install ".[review]"     # DOCX
+.\.venv\Scripts\python.exe -m pip install ".[workpaper]"  # DOCX + Excel
+.\.venv\Scripts\python.exe -m pip install ".[live]"       # 显式外部刷新
+.\.venv\Scripts\python.exe -m pip install ".[srm]" # SRM 浏览器会话适配器
 ```
 
-结果写入项目目录 `output/`。未查询、阻断、失败和无结构化结果会保留原状态。
+生产 OCR 不通过本包安装。宿主 Agent 需声明并提供 `ocr.capabilities.v1`，然后把
+`ocr-result.v1` 结果交给 `scripts/import_ocr_results.py`；默认要求本地处理。
+
+## 安装检查
+
+```powershell
+.\.venv\Scripts\python.exe scripts\preflight.py <项目目录> --profile report
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe <quick_validate.py> .
+```
+
+实际安装前先运行 `preflight.py`，把缺失依赖和技术标跳过策略一次性提交确认；只安装确认
+的项目。预检后流水线不在阶段中途请求输入，也不在报告渲染时补装依赖。生产 OCR、模型和
+浏览器仍由独立 Provider/适配器按授权提供，不随 Core 安装。

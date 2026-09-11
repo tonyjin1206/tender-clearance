@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from .normalize import to_halfwidth, uscc_check_digit, USCC_CHARSET
 
@@ -43,7 +44,7 @@ def id18_valid(number: str) -> bool:
 @dataclass
 class FieldHit:
     field: str  # 见 FIELD_NAMES
-    value: str  # 原始命中值（敏感项为完整原文，仅内存中使用；落盘前由 EvidenceBuilder 脱敏）
+    value: str  # 原始命中值（敏感项为完整原文，仅内存中使用；落盘展示按 redaction_mode 决定）
     context: str = ""  # 命中所依据的标签或说明
     confidence: float = 1.0
     via_label: bool = False
@@ -203,6 +204,103 @@ def scan_inline(text: str) -> list[FieldHit]:
     # 4) 人名（严格标签）
     hits.extend(_name_after_label(text, seen_values))
     return hits
+
+
+def scan_ocr_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    average_confidence: float | None = None,
+    location_precision: str = "page_only",
+) -> list[FieldHit]:
+    """按 OCR 文本块的空间邻近关系生成字段候选。
+
+    有坐标时只把同一行、位于标签右侧或紧邻下方的块作为值；没有坐标时
+    仅允许降级的全文候选，且强制低置信度，避免错行文本被当成字段事实。
+    """
+    clean = [b for b in blocks if str(b.get("text", "")).strip()]
+    page_conf = average_confidence if average_confidence is not None else 0.0
+    if location_precision == "page_only" or not any(b.get("bbox") for b in clean):
+        text = "\n".join(str(b.get("text", "")) for b in clean)
+        hits = scan_inline(text)
+        for hit in hits:
+            hit.confidence = min(hit.confidence, page_conf, 0.5)
+            hit.context = (hit.context + "；" if hit.context else "") + "OCR page_only 降级候选"
+        return hits
+
+    labels: list[tuple[int, str, str]] = []
+    for idx, block in enumerate(clean):
+        text = str(block.get("text", "")).strip()
+        for pat, field in _LABEL_FIELD:
+            if re.search(r"(?:^|[：:]|\s)" + pat + r"\s*(?:$|[：:])", text):
+                labels.append((idx, text, field))
+                break
+
+    def center(b: dict[str, Any]) -> tuple[float, float]:
+        box = b.get("bbox") or {}
+        return (float(box.get("x", 0)) + float(box.get("width", 0)) / 2,
+                float(box.get("y", 0)) + float(box.get("height", 0)) / 2)
+
+    hits: list[FieldHit] = []
+    used: set[tuple[str, str]] = set()
+    for label_idx, label_text, field in labels:
+        label = clean[label_idx]
+        label_box = label.get("bbox") or {}
+        lx, ly = center(label)
+        lh = float(label_box.get("height", 0.03))
+        candidates: list[tuple[float, dict[str, Any]]] = []
+        for idx, value_block in enumerate(clean):
+            if idx == label_idx:
+                continue
+            vx, vy = center(value_block)
+            if vx < lx - 0.01:
+                continue
+            dy = abs(vy - ly)
+            if dy <= max(lh * 2.5, 0.045):
+                score = dy + max(0.0, vx - lx) * 0.05
+            elif 0 <= vy - ly <= max(lh * 5, 0.12) and abs(vx - lx) <= 0.18:
+                score = 0.2 + (vy - ly)
+            else:
+                continue
+            candidates.append((score, value_block))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: item[0])
+        value_block = candidates[0][1]
+        value = str(value_block.get("text", "")).strip()
+        sub = scan_inline(value)
+        selected = next((h for h in sub if h.field == field), None)
+        if selected is None:
+            selected = _coerce_label_value(field, value)
+        if selected is None:
+            continue
+        conf = min(
+            float(label.get("confidence", page_conf)),
+            float(value_block.get("confidence", page_conf)),
+            page_conf or 0.0,
+        )
+        key = (selected.field, selected.value)
+        if key in used:
+            continue
+        used.add(key)
+        selected.confidence = conf
+        selected.context = f"OCR 空间配对：{label_text[:30]} → {value[:60]}"
+        hits.append(selected)
+    return hits
+
+
+def _coerce_label_value(field: str, value: str) -> FieldHit | None:
+    """对姓名/地址等没有独立格式正则的字段做保守值校验。"""
+    value = value.strip().strip("：:，,；;")
+    if not value or len(value) > 80:
+        return None
+    if field in {"legal_rep_name", "bid_agent_name", "shareholder_name", "contact_name"}:
+        value = _clean_name(value)
+        return FieldHit(field, value, via_label=True) if _plausible_name(value) else None
+    if field == "company_name" and not _COMPANY_RE.search(value):
+        return None
+    if field in {"project_name", "tenderer", "address", "bid_date", "project_code"}:
+        return FieldHit(field, value, via_label=True)
+    return None
 
 
 def _id_context(text: str, pos: int) -> str:

@@ -42,7 +42,7 @@
           "type": "string"
         },
         "raw_value": {
-          "description": "原文摘录；证件号/手机号已脱敏",
+          "description": "原文摘录；是否脱敏由 project.yaml 的 redaction_mode 决定",
           "title": "Raw Value",
           "type": "string"
         },
@@ -162,7 +162,7 @@
           "type": "string"
         },
         "redaction_mode": {
-          "description": "脱敏模式；当前固定 standard",
+          "description": "输出模式：none 表示按项目授权展示原值，standard 表示脱敏",
           "title": "Redaction Mode",
           "type": "string"
         },

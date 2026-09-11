@@ -10,7 +10,7 @@ import hashlib
 import io
 import re
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -109,9 +109,15 @@ def detect_media_type(path: Path) -> str:
 
 
 def import_fitz():
-    """导入 pymupdf/fitz 并抑制弃用警告（包已更名 pymupdf）。"""
+    """优先导入 PyMuPDF 新模块名，兼容旧版 ``fitz``。"""
     import warnings
 
+    try:
+        import pymupdf
+
+        return pymupdf
+    except ImportError:
+        pass
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*deprecated.*")
         import fitz
@@ -119,7 +125,18 @@ def import_fitz():
         return fitz
 
 
-def parse_pdf(path: Path, ocr_provider: str = "none") -> ParsedPdf:
+def parse_pdf(
+    path: Path,
+    ocr_provider: str = "none",
+    *,
+    inspect_pages: bool = True,
+) -> ParsedPdf:
+    """解析 PDF 文本/属性；生产 OCR 不在 Core 中执行。
+
+    ``mock`` 仅供虚构夹具读取 XMP 中预置的 OCR 结果，真实宿主结果必须走
+    ``ocr-result.v1`` 导入。历史 ``paddle`` 参数被视为不可用，不会触发任何
+    引擎、模型或页面渲染。
+    """
     fitz = import_fitz()
 
     out = ParsedPdf()
@@ -149,53 +166,38 @@ def parse_pdf(path: Path, ocr_provider: str = "none") -> ParsedPdf:
                 )
         except Exception:  # noqa: BLE001
             pass
-        for pno in range(doc.page_count):
-            page = doc.load_page(pno)
-            try:
-                text = page.get_text("text") or ""
-            except Exception:  # noqa: BLE001
-                text = ""
-                out.issues.append(ParseIssue("partial", f"第 {pno + 1} 页文本提取失败"))
-            imgs = page.get_images(full=True)
-            pdf_page = PdfPage(
-                page=pno + 1, text=text, has_text_layer=bool(text.strip()), image_count=len(imgs)
-            )
-            if ocr_provider == "paddle" and not pdf_page.has_text_layer:
-                try:
-                    pix = page.get_pixmap(dpi=200)
-                    from .ocr_paddle import ocr_image_bytes
-
-                    pdf_page.ocr_text, pdf_page.ocr_confidence = ocr_image_bytes(
-                        pix.tobytes("png"))
-                    if pdf_page.ocr_text:
-                        out.issues.append(ParseIssue(
-                            "ocr_paddle_used",
-                            f"第 {pno + 1} 页使用 PaddleOCR（置信度 {pdf_page.ocr_confidence}）"))
-                except RuntimeError as exc:
-                    out.issues.append(ParseIssue("ocr_unavailable", str(exc)))
-                except Exception as exc:  # noqa: BLE001
-                    out.issues.append(ParseIssue(
-                        "ocr_unavailable", f"第 {pno + 1} 页 PaddleOCR 失败：{type(exc).__name__}"))
-            out.pages.append(pdf_page)
-            for idx, img in enumerate(imgs):
-                xref = img[0]
-                try:
-                    raw = doc.extract_image(xref)
-                    data = raw["image"]
-                    out.images.append(_describe_image(data, raw.get("ext", ""), pno + 1, idx))
-                except Exception:  # noqa: BLE001
-                    out.issues.append(ParseIssue("partial", f"第 {pno + 1} 页第 {idx + 1} 张图片提取失败"))
-            if ocr_provider == "mock":
-                _mock_ocr_from_xmp(out, pno + 1)
-        # 表单
-        try:
+        if inspect_pages:
             for pno in range(doc.page_count):
-                for w in doc.load_page(pno).widgets() or []:
-                    out.form_fields.append(
-                        {"page": str(pno + 1), "name": str(w.field_name), "value": str(w.field_value)}
-                    )
-        except Exception:  # noqa: BLE001
-            pass
+                page = doc.load_page(pno)
+                try:
+                    text = page.get_text("text") or ""
+                except Exception:  # noqa: BLE001
+                    text = ""
+                    out.issues.append(ParseIssue("partial", f"第 {pno + 1} 页文本提取失败"))
+                imgs = page.get_images(full=True)
+                pdf_page = PdfPage(
+                    page=pno + 1, text=text, has_text_layer=bool(text.strip()), image_count=len(imgs)
+                )
+                out.pages.append(pdf_page)
+                for idx, img in enumerate(imgs):
+                    xref = img[0]
+                    try:
+                        raw = doc.extract_image(xref)
+                        data = raw["image"]
+                        out.images.append(_describe_image(data, raw.get("ext", ""), pno + 1, idx))
+                    except Exception:  # noqa: BLE001
+                        out.issues.append(ParseIssue("partial", f"第 {pno + 1} 页第 {idx + 1} 张图片提取失败"))
+                if ocr_provider == "mock":
+                    _mock_ocr_from_xmp(out, pno + 1)
+            # 表单
+            try:
+                for pno in range(doc.page_count):
+                    for w in doc.load_page(pno).widgets() or []:
+                        out.form_fields.append(
+                            {"page": str(pno + 1), "name": str(w.field_name), "value": str(w.field_value)}
+                        )
+            except Exception:  # noqa: BLE001
+                pass
     finally:
         doc.close()
     return out
@@ -223,14 +225,6 @@ def get_mock_ocr_text(xmp_xml: str, page: int) -> tuple[str, float] | None:
     for m in _XMP_OCR_RE.finditer(xmp_xml):
         if int(m.group(1)) == page:
             return m.group(3), float(m.group(2))
-    return None
-
-
-def get_paddle_ocr_text(parsed: "ParsedPdf", page: int) -> tuple[str, float] | None:
-    """取 PaddleOCR 结果（parse_pdf 阶段已按页识别）。"""
-    for p in parsed.pages:
-        if p.page == page and p.ocr_text:
-            return p.ocr_text, (p.ocr_confidence or 0.0)
     return None
 
 
@@ -348,6 +342,18 @@ def _read_docx_props(path: Path, out: ParsedDocx) -> None:
     """直接读取 docProps/app.xml 与 custom.xml（python-docx 未完整暴露）。"""
     try:
         with zipfile.ZipFile(path) as zf:
+            if "docProps/core.xml" in zf.namelist():
+                root = ElementTree.fromstring(zf.read("docProps/core.xml"))
+                core_map = {
+                    "creator": "creator", "lastModifiedBy": "last_modified_by", "title": "title",
+                    "subject": "subject", "keywords": "keywords", "description": "comments",
+                    "created": "created", "modified": "modified", "revision": "revision",
+                }
+                for child in root:
+                    tag = child.tag.rsplit("}", 1)[-1]
+                    key = core_map.get(tag)
+                    if key and child.text:
+                        out.core_properties[key] = child.text.strip()
             if "docProps/app.xml" in zf.namelist():
                 root = ElementTree.fromstring(zf.read("docProps/app.xml"))
                 for child in root:
@@ -368,16 +374,24 @@ def _read_docx_props(path: Path, out: ParsedDocx) -> None:
         out.issues.append(ParseIssue("partial", f"Office 扩展属性读取失败：{exc}"))
 
 
+def parse_docx_metadata(path: Path) -> ParsedDocx:
+    """只读取 DOCX 属性 XML，不加载正文、表格或媒体。"""
+    out = ParsedDocx()
+    _read_docx_props(path, out)
+    return out
+
+
 # ------------------------------------------------------------------ XLSX
 
 
 @dataclass
 class ParsedXlsx:
     sheets: list[dict[str, Any]] = field(default_factory=list)  # {"name":s,"cells":[[coord,value]]}
+    properties: dict[str, str] = field(default_factory=dict)
     issues: list[ParseIssue] = field(default_factory=list)
 
 
-def parse_xlsx(path: Path) -> ParsedXlsx:
+def parse_xlsx(path: Path, *, inspect_cells: bool = True) -> ParsedXlsx:
     import openpyxl
 
     out = ParsedXlsx()
@@ -387,21 +401,86 @@ def parse_xlsx(path: Path) -> ParsedXlsx:
         out.issues.append(ParseIssue("corrupt", f"无法打开 XLSX：{exc}"))
         return out
     try:
-        for ws in wb.worksheets:
-            cells: list[list[str]] = []
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.value is None:
-                        continue
-                    text = str(cell.value).strip()
-                    if text:
-                        cells.append([cell.coordinate, text])
-            out.sheets.append({"name": ws.title, "cells": cells})
+        props = wb.properties
+        for key in (
+            "creator", "lastModifiedBy", "title", "subject", "description", "keywords",
+            "category", "company", "lastPrinted", "created", "modified", "revision",
+        ):
+            value = getattr(props, key, None)
+            if value:
+                out.properties[key] = str(value)
+        if inspect_cells:
+            for ws in wb.worksheets:
+                cells: list[list[str]] = []
+                for row in ws.iter_rows():
+                    for cell in row:
+                        if cell.value is None:
+                            continue
+                        text = str(cell.value).strip()
+                        if text:
+                            cells.append([cell.coordinate, text])
+                out.sheets.append({"name": ws.title, "cells": cells})
     except Exception as exc:  # noqa: BLE001
         out.issues.append(ParseIssue("partial", f"XLSX 部分内容提取失败：{exc}"))
     finally:
         wb.close()
     return out
+
+
+# ---------------------------------------------------------- 可复用解析缓存
+
+def serialize_parsed(parsed: Any) -> dict[str, Any]:
+    """把一次性解析结果转换为 JSON 可存储结构。
+
+    内容提取和属性提取需要的底层文档对象完全相同；缓存这个纯数据快照后，
+    后续阶段不再重新打开/解码同一份 PDF、DOCX 或 XLSX。缓存不包含文件句柄、
+    运行时凭据或模型结果。
+    """
+    if isinstance(parsed, ParsedPdf):
+        return {"kind": "pdf", "value": asdict(parsed)}
+    if isinstance(parsed, ParsedDocx):
+        return {"kind": "docx", "value": asdict(parsed)}
+    if isinstance(parsed, ParsedXlsx):
+        return {"kind": "xlsx", "value": asdict(parsed)}
+    raise TypeError(f"不支持缓存的解析结果类型：{type(parsed).__name__}")
+
+
+def deserialize_parsed(payload: Any) -> Any | None:
+    """读取解析缓存；旧版本或损坏缓存返回 None，由调用方安全回退重解析。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get("value"), dict):
+        return None
+    value = payload["value"]
+    try:
+        kind = payload.get("kind")
+        if kind == "pdf":
+            return ParsedPdf(
+                pages=[PdfPage(**item) for item in value.get("pages", [])],
+                metadata=dict(value.get("metadata", {})),
+                xmp_xml=str(value.get("xmp_xml", "")),
+                embedded_files=list(value.get("embedded_files", [])),
+                form_fields=list(value.get("form_fields", [])),
+                images=[PageImage(**item) for item in value.get("images", [])],
+                issues=[ParseIssue(**item) for item in value.get("issues", [])],
+            )
+        if kind == "docx":
+            return ParsedDocx(
+                paragraphs=list(value.get("paragraphs", [])),
+                tables=list(value.get("tables", [])),
+                header_footer_text=list(value.get("header_footer_text", [])),
+                core_properties=dict(value.get("core_properties", {})),
+                app_properties=dict(value.get("app_properties", {})),
+                custom_properties=dict(value.get("custom_properties", {})),
+                issues=[ParseIssue(**item) for item in value.get("issues", [])],
+            )
+        if kind == "xlsx":
+            return ParsedXlsx(
+                sheets=list(value.get("sheets", [])),
+                properties=dict(value.get("properties", {})),
+                issues=[ParseIssue(**item) for item in value.get("issues", [])],
+            )
+    except (TypeError, ValueError, KeyError):
+        return None
+    return None
 
 
 # ------------------------------------------------------------------ 通用文本
@@ -438,10 +517,13 @@ __all__ = [
     "detect_media_type",
     "parse_pdf",
     "parse_docx",
+    "parse_docx_metadata",
     "parse_xlsx",
     "read_text_file",
     "office_created_modified",
     "get_mock_ocr_text",
+    "serialize_parsed",
+    "deserialize_parsed",
     "parse_pdf_date",
     "to_halfwidth",
 ]

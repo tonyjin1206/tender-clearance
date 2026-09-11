@@ -228,13 +228,16 @@ def _build_parties(dir_name: str, supplier_id: str, sf: dict[str, list]) -> list
             if name in seen:
                 continue
             seen.add(name)
+            linked_ids = list(id_digests.items()) if id_field else []
+            linked_digest = linked_ids[0][0] if len(linked_ids) == 1 else None
+            linked_mask = linked_ids[0][1][0].value_masked if len(linked_ids) == 1 else None
             conf_method_ok = h.confidence >= LOW_CONFIDENCE and not h.method.startswith("ocr")
             parties.append(Party(
                 party_id=stable_id("PTY", {"supplier": supplier_id, "role": role, "name": name}),
                 name=name,
                 role=role,  # type: ignore[arg-type]
-                id_digest=None,
-                id_mask=None,
+                id_digest=linked_digest,
+                id_mask=linked_mask,
                 supplier_id=supplier_id,
                 evidence_ids=[h.evidence_id],
                 confirmation="confirmed" if conf_method_ok else "unconfirmed",
