@@ -1,6 +1,6 @@
 [project]
 name = "tender-clearance"
-version = "0.1.0"
+version = "0.2.0"
 description = "投标清标 Skill：多家标书交叉检查、外部证据导入与三级预警清标报告"
 requires-python = ">=3.12"
 dependencies = [
