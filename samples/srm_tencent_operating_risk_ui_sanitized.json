@@ -1,0 +1,19 @@
+{
+  "capture_type": "ui_rendered_from_authenticated_portrait_page",
+  "company": "腾讯云计算（北京）有限责任公司",
+  "section": "股权出质",
+  "page_link_cf_id": "8a865144726507bc0172650ed316027f",
+  "total": 6,
+  "visible_on_first_page": 5,
+  "next_page_not_opened": 1,
+  "columns": ["登记日期", "出质股权标的企业", "出质人", "质权人", "状态", "出质股权数额", "登记编号"],
+  "records": [
+    {"registeredAt": "2022-07-12", "targetCompany": "北京光启元数字科技有限公司", "pledger": "王某", "pledgee": "腾讯云计算（北京）有限责任公司", "status": "无效", "amount": "6.6177", "registrationNo": "<masked>"},
+    {"registeredAt": "2022-07-12", "targetCompany": "北京光启元数字科技有限公司", "pledger": "张某", "pledgee": "腾讯云计算（北京）有限责任公司", "status": "无效", "amount": "50.4628", "registrationNo": "<masked>"},
+    {"registeredAt": "2022-07-12", "targetCompany": "北京光启元数字科技有限公司", "pledger": "王某", "pledgee": "腾讯云计算（北京）有限责任公司", "status": "无效", "amount": "7.8431", "registrationNo": "<masked>"},
+    {"registeredAt": "2022-07-12", "targetCompany": "北京光启元数字科技有限公司", "pledger": "张某", "pledgee": "腾讯云计算（北京）有限责任公司", "status": "无效", "amount": "42.578", "registrationNo": "<masked>"},
+    {"registeredAt": "2022-07-12", "targetCompany": "北京光启元数字科技有限公司", "pledger": "蒋某", "pledgee": "腾讯云计算（北京）有限责任公司", "status": "无效", "amount": "75.0274", "registrationNo": "<masked>"}
+  ],
+  "disabled_categories": ["经营异常", "行政处罚", "行政处罚(信用中国)", "严重违法", "欠税公告", "动产抵押", "司法拍卖", "清算信息", "知识产权出质", "税收违法", "环保处罚"],
+  "redaction": ["individual names masked", "registration numbers masked", "no phone/email/cookie/token included"]
+}

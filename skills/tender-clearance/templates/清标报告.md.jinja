@@ -1,0 +1,180 @@
+{# 清标报告固定结构：封面、基本信息、SRM 企业信息、政府采购网、文件线索、结论 #}
+# 投标清标报告：{{ project.project_name }}
+
+## 1. 封面信息页
+
+| 项目 | 内容 |
+|---|---|
+| 招标人 | {{ project_identity.tenderer | join('；') or '未取得' }} |
+| 项目名称 | {{ project_identity.project_name | join('；') or project.project_name }} |
+| 项目编号/编码 | {{ project_identity.project_code | join('；') or project.project_id }} |
+| 投标日期 | {{ project_identity.bid_date | join('；') or '未取得' }} |
+| 投标人（公司）名单 | {{ summary.supplier_names | join('、') or '未取得' }} |
+
+## 2. 基本信息页
+
+### 2.1 采购项目信息
+
+| 项目名称 | 项目编码 | 投标日期 |
+|---|---|---|
+| {{ project_identity.project_name | join('；') or project.project_name }} | {{ project_identity.project_code | join('；') or project.project_id }} | {{ project_identity.bid_date | join('；') or '未取得' }} |
+
+### 2.2 标书投标人信息
+
+| 投标人 | 公司名称 | 统一社会信用代码 | 法人代表姓名 | 法人代表身份证号 | 授权代表姓名 | 授权代表身份证号 |
+|---|---|---|---|---|---|---|
+{% for r in business_rows -%}
+| {{ r.supplier }} | {{ r.company }} | {{ r.uscc }} | {{ r.legal_name }} | {{ r.legal_id }} | {{ r.agent_name }} | {{ r.agent_id }} |
+{% endfor %}
+
+字段来源限定为商务标；技术标和一览表只用于文件盘点、属性及扫描线索分析。
+
+本页主体字段包括：统一社会信用代码、法人代表姓名、法人代表身份证号、授权代表姓名、授权代表身份证号。
+
+## 3. 工商信息（富奥 SRM）
+
+{% for r in srm_registration -%}
+### {{ r.supplier }}
+
+{% if r.fields -%}
+| 企业名称 | 法定代表人 | 注册资本 | 实缴资本 | 成立日期 | 企业状态 | 统一社会信用代码 | 企业类型 | 一级行业 | 二级行业 | 三级行业 | 四级行业 | 营业期限 | 参保人数 | 曾用名 | 注册地址 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| {{ r.fields.get('企业名称','未返回') }} | {{ r.fields.get('法定代表人','未返回') }} | {{ r.fields.get('注册资本','未返回') }} | {{ r.fields.get('实缴资本','未返回') }} | {{ r.fields.get('成立日期','未返回') }} | {{ r.fields.get('企业状态','未返回') }} | {{ r.fields.get('统一社会信用代码','未返回') }} | {{ r.fields.get('企业类型','未返回') }} | {{ r.fields.get('一级行业', r.fields.get('行业大类','未返回')) }} | {{ r.fields.get('二级行业','未返回') }} | {{ r.fields.get('三级行业','未返回') }} | {{ r.fields.get('四级行业','未返回') }} | {{ r.fields.get('营业期限','未返回') }} | {{ r.fields.get('参保人数','未返回') }} | {{ r.fields.get('曾用名','未返回') }} | {{ r.fields.get('注册地址', r.fields.get('地址','未返回')) }} |
+{% else -%}
+SRM 查询状态：{{ r.query_status }}。登录成功但未取得工商记录时，保留该状态，不解释为无风险。
+{% endif -%}
+证据：{{ r.evidence_ids | join('、') or '无记录证据' }}
+
+{% endfor -%}
+工商信息交叉校验结果：{{ srm_duplicate_checks['工商信息'] }}。
+
+## 4. 股东信息（富奥 SRM）
+
+{% if srm_ownership -%}
+| 投标人 | 股东名称 | 投资金额 | 认缴时间 | 认缴比例 | 认缴出资方式 | 证据 |
+|---|---|---|---|---|---|---|
+{% for r in srm_ownership -%}
+| {{ r.supplier }} | {{ r.shareholder }} | {{ r.amount }} | {{ r.time }} | {{ r.ratio }} | {{ r.method }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor -%}
+{% else -%}
+未取得 SRM 股东记录；不能据此判断无股东或无重复。
+{% endif %}
+
+股东信息交叉校验结果：{{ srm_duplicate_checks['股东信息'] }}。
+
+## 5. 分支机构（富奥 SRM）
+
+{% if srm_branches -%}
+| 投标人 | 企业名称 | 成立日期 | 企业状态 | 法人 | 证据 |
+|---|---|---|---|---|---|
+{% for r in srm_branches -%}
+| {{ r.supplier }} | {{ r.fields.get('企业名称','未返回') }} | {{ r.fields.get('成立日期','未返回') }} | {{ r.fields.get('企业状态','未返回') }} | {{ r.fields.get('法人','未返回') }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor -%}
+{% else -%}
+未取得 SRM 分支机构结构化记录；不能据此判断无分支机构。
+{% endif %}
+
+分支机构交叉校验结果：{{ srm_duplicate_checks['分支机构'] }}。
+
+## 6. 主要人员（富奥 SRM）
+
+{% if srm_personnel -%}
+| 投标人 | 姓名 | 职位 | 证据 |
+|---|---|---|---|
+{% for r in srm_personnel -%}
+| {{ r.supplier }} | {{ r.fields.get('姓名','未返回') }} | {{ r.fields.get('职位','未返回') }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor -%}
+{% else -%}
+未取得 SRM 主要人员结构化记录；不能据此判断无主要人员。
+{% endif %}
+
+主要人员交叉校验结果：{{ srm_duplicate_checks['主要人员'] }}。
+
+## 7. 政府采购网失信信息及证据截图
+
+查询入口：<http://219.143.74.201/search/cr/>；查询方式：按投标人名称查询。
+
+{% for src in dishonesty_sources if src.label == '中国政府采购网' -%}
+查询状态：{% for s in src.status_rows %}{{ s.line }}{% if not loop.last %}；{% endif %}{% endfor %}
+
+{% if src.records -%}
+| 投标人 | 失信信息 | 处理结果 | 依据/文号 | 日期 | 有效期 | 证据 |
+|---|---|---|---|---|---|---|
+{% for r in src.records -%}
+| {{ r.supplier }} | {{ r.behavior }} | {{ r.penalty }} | {{ r.reference }} | {{ r.date }} | {{ r.validity }} | {{ r.evidence_ids | join('、') }} |
+{% endfor %}
+{% else -%}
+当前没有可列示的政府采购网失信记录；未查询、受阻或失败不等于无失信记录。
+{% endif %}
+{% endfor %}
+
+{% if government_screenshots -%}
+{% for s in government_screenshots -%}
+证据文件：{{ s.ref }}
+{% if s.image %}![政府采购网查询证据截图]({{ s.image }}){% endif %}
+
+{% endfor -%}
+{% else -%}
+未取得政府采购网截图文件；请补充按投标人名称查询的原始截图。
+{% endif %}
+
+## 8. PDF、Office 与扫描件文件线索
+
+{% if metadata_findings -%}
+| 编号 | 风险域 | 预警 | 证据强度 | 涉及投标人 | 发现事实 | 规则 | 状态 | 建议复核动作 |
+|---|---|---|---|---|---|---|---|---|
+{% for f in metadata_findings -%}
+| {{ f.finding_id }} | {{ f.domain_label }} | {{ f.level_label }} | {{ f.evidence_strength }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.status_label }} | {{ f.recommendation }} |
+{% endfor %}
+{% else -%}
+未发现跨投标人的文件属性、编辑痕迹或扫描设备同源线索。
+{% endif %}
+
+文件属性、编辑工具、创建时间、PDF XMP、Office 属性和扫描设备信息均为证据线索；常见或可修改属性不得单独作否决性判断。
+
+## 9. 清标结论与三级预警
+
+| 投标人 | I 级（高） | II 级（中） | III 级（低） | 必须人工复核 |
+|---|---|---|---|---|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.i }} | {{ s.ii }} | {{ s.iii }} | {{ s.review }} |
+{% endfor %}
+
+{% if summary.headline_findings -%}
+### I 级预警（人工复核必需）
+{% for f in summary.headline_findings -%}
+- **{{ f.finding_id }}**（规则 {{ f.rule_id }}，证据强度 {{ f.evidence_strength }}）：{{ f.fact }}
+{% endfor %}
+{% endif %}
+
+### 查询状态
+
+| 投标人 | 富奥 SRM | 中国政府采购网 |
+|---|---|---|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.srm_status }} | {{ s.gov_status }} |
+{% endfor %}
+
+本报告输出的是可复核、可追溯的风险线索与证据整理结果，不是串通投标、违法失信、资格不合格或废标的最终认定；任何最终认定必须由采购人或合规人员人工复核后作出。查询成功但无匹配记录仅说明本次查询未取得记录，不作“无风险”结论。
+
+## 10. 证据与人工复核
+
+{% if review_findings -%}
+| 编号 | 预警 | 涉及投标人 | 事实 | 规则 | 证据强度 | 建议动作 |
+|---|---|---|---|---|---|---|
+{% for f in review_findings -%}
+| {{ f.finding_id }} | {{ f.level_label }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.rule_id }} | {{ f.evidence_strength }} | {{ f.recommendation }} |
+{% endfor %}
+{% else -%}
+无强制人工复核发现。
+{% endif %}
+
+### 待补资料
+
+{% for item in review_gaps -%}
+- {{ item }}
+{% else -%}
+- 暂无。
+{% endfor %}
+
+所有结论均通过 `证据索引.csv` 的 evidence ID 回溯到标书文件、SRM 页面引用、政府采购网截图或授权导入材料；完整输入文件清单和 SHA-256 见结构化结果及工作底稿。

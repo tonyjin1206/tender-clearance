@@ -1,0 +1,45 @@
+{
+  "channel": "srm",
+  "query_mode": "manual_import",
+  "queried_at": "2026-09-01T11:00:00+08:00",
+  "querier": "王审（合规部）",
+  "source_url": "国家企业信用信息公示系统（人工查询，虚构示例）",
+  "status": "match",
+  "records": [],
+  "ownership": [
+    {
+      "from_party_name": "王建国",
+      "from_party_id_number": "110101197001014113",
+      "to_company_name": "北京华信创远科技有限公司",
+      "to_company_uscc": "91110108MA01CWY70M",
+      "share_ratio": 60,
+      "relation_date": "2018-03-01",
+      "relation_end_date": "2025-06-30"
+    },
+    {
+      "from_party_name": "王建国",
+      "from_party_id_number": "110101197001014113",
+      "to_company_name": "中恒泰达（北京）工程管理有限公司",
+      "to_company_uscc": "91110105MA02RTB417",
+      "share_ratio": 55,
+      "relation_date": "2019-01-01",
+      "relation_end_date": "2024-12-31"
+    },
+    {
+      "from_party_name": "赵敏",
+      "from_party_id_number": "110101198203256625",
+      "to_company_name": "中恒泰达（北京）工程管理有限公司",
+      "to_company_uscc": "91110105MA02RTB417",
+      "share_ratio": 51,
+      "relation_date": "2021-05-01"
+    },
+    {
+      "from_party_name": "赵敏",
+      "from_party_id_number": "110101198203256625",
+      "to_company_name": "云图智联信息技术有限公司",
+      "to_company_uscc": "91440306MA03KLM26F",
+      "share_ratio": 60,
+      "relation_date": "2020-08-01"
+    }
+  ]
+}

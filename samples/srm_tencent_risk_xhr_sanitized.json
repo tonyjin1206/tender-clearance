@@ -1,0 +1,39 @@
+{
+  "capture_type": "network_response",
+  "company": "腾讯云计算（北京）有限责任公司",
+  "request": {
+    "method": "GET",
+    "path": "/iuap-data-ep/intellid/outside/custom/getDimensBycfId",
+    "query": {
+      "isAjax": "1",
+      "tabId": "2",
+      "dataId": "788a17caf10f6b629cc58c92f0d0d0f4",
+      "cfId": "8a865144726507bc0172650ed3160282",
+      "companyName": "腾讯云计算（北京）有限责任公司",
+      "dataCode": "10",
+      "source": "public",
+      "enterpriseType": "0",
+      "funcCode": "ent_info_view"
+    },
+    "http_status": 200
+  },
+  "response": {
+    "status": 1,
+    "result": {
+      "datas": {"number": 0, "size": 5, "content": null, "totalElements": 0},
+      "viewMoreFlag": 0,
+      "viewType": "basetable",
+      "rank": 35
+    },
+    "msg": "执行成功",
+    "ext": "success",
+    "level": 0,
+    "errorCode": "1",
+    "displayCode": "1",
+    "message": "api.response.code.success",
+    "detailMsg": "api.response.code.success",
+    "traceId": "<removed-trace-id>"
+  },
+  "page_comparison": {"股权出质页面可见记录数": 6, "result.datas.totalElements": 0},
+  "interpretation": "真实经营风险 XHR；空响应不能解释为企业没有经营风险。"
+}

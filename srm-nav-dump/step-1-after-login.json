@@ -1,0 +1,357 @@
+{
+ "step": "1-after-login",
+ "captured_at": "2026-09-09T21:49:58",
+ "frames": [
+  {
+   "url": "https://yonbip.fawer.com.cn/#/",
+   "title": "富奥汽车零部件股份有限公司",
+   "text_sample": "常用 数字化建模 财务云 事项会计中台 税务服务 供应链云 供应链公共 销售服务 采购供应 人力云 组织与员工管理 人力服务 协同云 协同服务 采购云 采购服务公共 供应商管理 寻源到合同 供应链协同 采购商城 数智采购 采购服务 卖家服务 营销云 营销中台 B2C服务 零售服务 制造云 设备后服务 智造公共服务 项目云 项目预算 云平台 开发平台 连接集成平台 数据平台 智能平台 企业自定义 社交沟通 我的收藏 供应商注册受理 需求申请 采购项目 采购需求 电子商城 竞拍项目 应用构建 工作流设计 UI模板 员工 业务对象 特征 最近使用 供应商档案采购项目 纳税人基本信息企业信息API文档查企业系统参数设置竞拍项目 打印模板询价电子商城 订单中心福利商城供货目录 富奥采购服务工作台2025-员工 富奥采购服务工作台2025-集团 电子商城工作台 凯 首页 常用 供应商注册受理 需求申请 采购项目 采购需求 电子商城 竞拍项目 全部收藏和历史 供应商关系管理 需求中心 采购寻源 招投标 竞拍采购 废旧拍卖 专属超市 采购服务中台 质量协同 靳孟凯 2026-09-09 周三 待办任务 待办 1 我发起的 工作通知 3 预警通知 进入消息中心 待办 全部/单据标题/发起人/单据类型 商城订单详情页20260908008752 靳孟凯 靳孟凯 1天4小时37分钟19秒 公告 公告 关于优化调整SRM系统招标文件模板的通知 公告信息 07月03日 16:29 关于下发SRM系统招标文件模板的通知 公告信息 09月23日 11:09 关于下发SRM系统招标文件模板的通知 公告信息 06月14日 15:17 关于富奥股份公司SRM采购平台上线的通知 企业公告 04月17日 08:46 询比价 未发布 0 接受报价中 0 报价已截止 0 已推荐供应商 0 已定标 0 已流标 0 已作",
+   "clickables": [
+    {
+     "tag": "DIV",
+     "text": "常用",
+     "cls": "domain-cloud-wrap binding-menubar active"
+    },
+    {
+     "tag": "DIV",
+     "text": "数字化建模",
+     "cls": "domain-cloud-wrap binding-menubar"
+    },
+    {
+     "tag": "LI",
+     "text": "事项会计中台",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "税务服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "供应链公共",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "销售服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "采购供应",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "组织与员工管理",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "人力服务",
+     "cls": ""
+    },
+    {
+     "tag": "DIV",
+     "text": "协同云 协同服务",
+     "cls": "domain-cloud-wrap binding-menubar"
+    },
+    {
+     "tag": "LI",
+     "text": "采购服务公共",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "供应商管理",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "寻源到合同",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "供应链协同",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "采购商城",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "数智采购",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "采购服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "卖家服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "营销中台",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "B2C服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "零售服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "设备后服务",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "智造公共服务",
+     "cls": ""
+    },
+    {
+     "tag": "DIV",
+     "text": "项目云 项目预算",
+     "cls": "domain-cloud-wrap binding-menubar"
+    },
+    {
+     "tag": "LI",
+     "text": "开发平台",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "连接集成平台",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "数据平台",
+     "cls": ""
+    },
+    {
+     "tag": "LI",
+     "text": "智能平台",
+     "cls": ""
+    },
+    {
+     "tag": "DIV",
+     "text": "企业自定义 社交沟通",
+     "cls": "domain-cloud-wrap binding-menubar"
+    },
+    {
+     "tag": "LI",
+     "text": "我的收藏",
+     "cls": "sub-menu-item active"
+    },
+    {
+     "tag": "LI",
+     "text": "最近使用",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "异构业财事项",
+     "cls": "sub-menu-item active"
+    },
+    {
+     "tag": "LI",
+     "text": "零代码开发",
+     "cls": "sub-menu-item active"
+    },
+    {
+     "tag": "LI",
+     "text": "低代码开发",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "专业开发",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "移动开发服务",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "开发管理工具",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "运营管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "我的企业",
+     "cls": "sub-menu-item active"
+    },
+    {
+     "tag": "LI",
+     "text": "全球化",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "组织管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "权限管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "特征管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "基础数据",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "工程数据",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "流程管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "电子签配置",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "规则引擎",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "模板管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "系统管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "消息平台",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "报表平台",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "实施工具",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "移动端配置",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "文件服务",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "员工管理",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "设置",
+     "cls": "sub-menu-item active"
+    },
+    {
+     "tag": "LI",
+     "text": "价格中心",
+     "cls": "sub-menu-item"
+    },
+    {
+     "tag": "LI",
+     "text": "审批",
+     "cls": "sub-menu-item active"
+    },
+    {
+     "tag": "LI",
+     "text": "零代码应用构建",
+     "cls": "sub-menu-item"
+    }
+   ],
+   "tables": [],
+   "inputs": [
+    {
+     "type": "text",
+     "placeholder": "搜索服务名称",
+     "id": ""
+    },
+    {
+     "type": "text",
+     "placeholder": "搜索",
+     "id": ""
+    },
+    {
+     "type": "text",
+     "placeholder": "搜索服务名称",
+     "id": ""
+    },
+    {
+     "type": "search",
+     "placeholder": "",
+     "id": "rc_select_4"
+    },
+    {
+     "type": "search",
+     "placeholder": "",
+     "id": "rc_select_5"
+    },
+    {
+     "type": "search",
+     "placeholder": "",
+     "id": "rc_select_6"
+    },
+    {
+     "type": "search",
+     "placeholder": "",
+     "id": "rc_select_7"
+    },
+    {
+     "type": "text",
+     "placeholder": "",
+     "id": "ykj-search"
+    }
+   ],
+   "is_main": true
+  }
+ ]
+}

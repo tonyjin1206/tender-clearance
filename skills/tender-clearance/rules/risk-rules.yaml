@@ -1,0 +1,93 @@
+version: "1.1.0"
+description: >
+  投标清标确定性规则（方案 6.5）。预警级别与证据强度上限在此声明，
+  由 assess_risk.py 的确定性逻辑执行；模型不得修改规则输出或等级。
+  任何 D 级证据最多触发 III 级；依赖名称模糊匹配的关联最多 III 级，
+  主体未确认最多 III 级（引擎统一强制，见 level_caps）。
+
+params:
+  ocr_low_confidence: 0.85
+  metadata_time_window_minutes: 30
+  company_name_similarity: 0.75
+  metadata_independent_fields_required_for_ii: 2
+  # 这些值出现于通用编辑工具/空白作者字段时，不视为有效同源线索
+  generic_creator_values: ["", "wps", "microsoft word", "word", "pdf", "acrobat", "adobe",
+                           "microsoft excel", "excel", "powerpoint", "libreoffice", "openoffice", "skia/pdfs m85",
+                           "microsoft macintosh word", "microsoft office word"]
+  generic_author_values: ["", "wps", "microsoft office user", "user", "作者", "office user", "windows 用户", "admin"]
+  limited_metadata_fields: ["author", "last_modified_by", "company", "title", "subject", "keywords",
+                            "comments", "category", "docx.custom.*", "exif.make", "exif.model", "exif.software", "exif.artist"]
+  unique_metadata_fields: ["xmp.serial_number", "exif.bodyserialnumber", "exif.imageuniqueid"]
+
+level_caps:
+  evidence_D: "III"
+  subject_unconfirmed: "III"
+  name_fuzzy_only: "III"
+
+rules:
+  - id: ID-001
+    title: 不同投标人统一社会信用代码相同
+    domain: identity
+    level: "I"
+    strength_cap: "A"
+    requires_human_review: true
+  - id: ID-002
+    title: 不同投标人授权代表或法人证件摘要相同
+    domain: identity
+    level: "I"
+    strength_cap: "A"
+    requires_human_review: true
+  - id: ID-003
+    title: 电话、邮箱、联系人、地址交叉重合
+    domain: identity
+    level: "II"
+    strength_cap: "A"
+    requires_human_review: false
+  - id: ID-003W
+    title: 仅同一行政区划的地址线索
+    domain: identity
+    level: "III"
+    strength_cap: "A"
+    requires_human_review: false
+  - id: META-001
+    title: 非通用元数据同源线索（作者/公司/标题/类别/自定义属性等）
+    domain: metadata
+    level: "II"      # 单项有限辨识字段命中时降为 III（引擎执行）
+    strength_cap: "A"
+    requires_human_review: false
+  - id: META-002
+    title: 明确的设备唯一标识重复
+    domain: metadata
+    level: "I"
+    strength_cap: "A"
+    requires_human_review: true
+  - id: META-003
+    title: 弱线索重合（编辑工具/创建时间相近等）
+    domain: metadata
+    level: "III"
+    strength_cap: "A"
+    requires_human_review: false
+  - id: OWN-001
+    title: 同一截点的共同控制、共同股东或明确股权关联
+    domain: ownership
+    level: "II"
+    strength_cap: "B"
+    requires_human_review: false
+  - id: JUD-001
+    title: 已确认主体的司法经营风险记录
+    domain: judicial
+    level: "II"
+    strength_cap: "B"
+    requires_human_review: false
+  - id: DIS-003
+    title: 政府采购严重违法失信行为记录
+    domain: dishonesty
+    level: "II"
+    strength_cap: "B"
+    requires_human_review: false
+  - id: COV-001
+    title: 外部来源未查、失败、受限或主体未确认
+    domain: coverage
+    level: "III"
+    strength_cap: "D"
+    requires_human_review: false

@@ -1,0 +1,16 @@
+# 测试项目配置（全部为虚构数据）
+project_id: PRJ-DEMO-2026-001
+project_name: 虚构示范项目：园区综合运维服务采购
+bid_deadline: '2026-08-31T09:00:00+08:00'
+run_date: '2026-09-09'
+supplier_directory_mapping:
+  huaxin-chuangyuan: 北京华信创远科技有限公司
+  zhongheng-taida: 中恒泰达（北京）工程管理有限公司
+  yuntu-zhilian: 云图智联信息技术有限公司
+  huaxin-info: 北京华信创远信息技术有限公司
+procurement_rules_source: unspecified
+external_query_mode: offline
+external_query_sources: []
+redaction_mode: standard
+retention_policy: project_local
+ocr_provider: mock

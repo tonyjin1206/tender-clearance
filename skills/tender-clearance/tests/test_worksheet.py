@@ -1,0 +1,123 @@
+"""Excel 工作底稿测试：生成、结构、脱敏、确定性。"""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+
+
+@pytest.fixture()
+def worksheet_project(alpha_project, tmp_path):
+    import shutil
+
+    from tc.pipeline import run_stage
+
+    dst = tmp_path / "p"
+    shutil.copytree(alpha_project, dst)
+    shutil.rmtree(dst / "output", ignore_errors=True)
+    (dst / "output").mkdir()
+    for stage in ("inventory.py", "extract_content.py", "extract_metadata.py",
+                  "normalize_and_match.py", "import_external_evidence.py",
+                  "query_sources.py", "assess_risk.py", "render_report.py",
+                  "render_worksheet.py"):
+        run_stage(stage, ["--skip-srm-gate"] if stage == "render_report.py" else [], dst)
+    return dst
+
+
+def test_worksheet_generated_with_expected_sheets(worksheet_project):
+    from openpyxl import load_workbook
+
+    path = worksheet_project / "output" / "清标底稿.xlsx"
+    assert path.exists()
+    wb = load_workbook(path)
+    for name in ("说明", "供应商对照", "比对矩阵", "风险发现", "查询覆盖",
+                 "外部记录", "证据索引", "文件清单", "人工复核"):
+        assert name in wb.sheetnames, f"缺少工作表 {name}"
+
+
+def test_worksheet_row_counts_match_data(worksheet_project):
+    import json
+    from openpyxl import load_workbook
+
+    wb = load_workbook(worksheet_project / "output" / "清标底稿.xlsx")
+    findings = json.loads((worksheet_project / "output/interim/findings.json")
+                          .read_text(encoding="utf-8"))
+    n_findings = len(findings.get("findings", []))
+    ws = wb["风险发现"]
+    assert ws.max_row - 1 == n_findings
+    # 人工复核行数 = findings 中 human_review_required 的条数
+    n_review = sum(1 for f in findings["findings"]
+                   if f.get("human_review_required")
+                   or f.get("finding_id") in (findings.get("human_review_queue") or []))
+    assert wb["人工复核"].max_row - 1 == n_review
+
+
+def test_worksheet_no_unmasked_sensitive_data(worksheet_project):
+    from openpyxl import load_workbook
+
+    _ID18 = re.compile(r"(?<![0-9A-Za-z])\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![0-9A-Za-z])")
+    _MOBILE = re.compile(r"(?<![0-9A-Za-z])1[3-9]\d{9}(?![0-9A-Za-z])")
+    wb = load_workbook(worksheet_project / "output" / "清标底稿.xlsx")
+    for name in wb.sheetnames:
+        for row in wb[name].iter_rows():
+            for cell in row:
+                v = str(cell.value or "")
+                assert not _ID18.search(v), f"{name}!{cell.coordinate} 疑似完整身份证号"
+                assert not _MOBILE.search(v), f"{name}!{cell.coordinate} 疑似完整手机号"
+
+
+def test_worksheet_deterministic(alpha_project, tmp_path):
+    """同输入两次生成，除运行信息外逐单元格一致（T12 同源约束）。"""
+    import shutil
+
+    from openpyxl import load_workbook
+    from tc.pipeline import run_stage
+
+    outs = []
+    for i in range(2):
+        dst = tmp_path / f"p{i}"
+        shutil.copytree(alpha_project, dst)
+        shutil.rmtree(dst / "output", ignore_errors=True)
+        (dst / "output").mkdir()
+        for stage in ("inventory.py", "extract_content.py", "extract_metadata.py",
+                      "normalize_and_match.py", "import_external_evidence.py",
+                      "query_sources.py", "assess_risk.py", "render_report.py",
+                      "render_worksheet.py"):
+            run_stage(stage, ["--skip-srm-gate"] if stage == "render_report.py" else [], dst)
+        wb = load_workbook(dst / "output" / "清标底稿.xlsx")
+        data = {}
+        for name in wb.sheetnames:
+            ws = wb[name]
+            if name == "说明":
+                continue  # 含运行时间戳，允许不同
+            data[name] = [[c.value for c in row] for row in ws.iter_rows()]
+        outs.append(data)
+    assert outs[0] == outs[1]
+
+
+def test_report_pdf_generated_and_redacted(alpha_project, tmp_path):
+    """render_report 应同步产出 PDF 审阅版：可打开、含关键内容、无敏感明文。"""
+    import shutil
+
+    import fitz
+    from tc.pipeline import run_stage
+
+    project = tmp_path / "p"
+    shutil.copytree(alpha_project, project)
+    shutil.rmtree(project / "output", ignore_errors=True)
+    (project / "output").mkdir()
+    for stage in ("inventory.py", "extract_content.py", "extract_metadata.py",
+                  "normalize_and_match.py", "import_external_evidence.py",
+                  "query_sources.py", "assess_risk.py", "render_report.py"):
+        run_stage(stage, ["--skip-srm-gate"] if stage == "render_report.py" else [], project)
+    pdf = project / "output" / "清标报告.pdf"
+    assert pdf.exists()
+    doc = fitz.open(pdf)
+    text = "\n".join(page.get_text() for page in doc)
+    assert doc.page_count >= 3
+    for probe in ("清标", "统一社会信用代码", "人工复核"):
+        assert probe in text, f"PDF 缺少关键内容：{probe}"
+    _ID18 = re.compile(r"(?<![0-9A-Za-z])\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![0-9A-Za-z])")
+    _MOB = re.compile(r"(?<![0-9A-Za-z])1[3-9]\d{9}(?![0-9A-Za-z])")
+    assert not _ID18.search(text) and not _MOB.search(text), "PDF 含完整证件号/手机号明文"
