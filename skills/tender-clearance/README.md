@@ -15,7 +15,7 @@
 ## 安装与环境
 
 ```bash
-cd skills/tender-clearance
+cd <发行包目录>
 uv venv --python 3.12 .venv
 uv pip install -p .venv/bin/python -r requirements-core.txt
 .venv/bin/python scripts/gen_schemas.py   # 可选：从 tc/models.py 重新生成 schemas/
@@ -29,7 +29,7 @@ DOCX、Excel、实时外部查询和 SRM 浏览器适配器分别安装 `.[revie
 
 ```bash
 P=<你的项目目录>          # 含 project.yaml / bids/ / procurement/ / external-evidence/
-PY=skills/tender-clearance/.venv/bin/python
+PY=.venv/bin/python
 
 $PY scripts/preflight.py       $P --profile report
 $PY scripts/inventory.py             $P
@@ -72,16 +72,16 @@ $PY scripts/validate_project.py      $P --stage final
 不需要账号密码），内部仅保留**富奥 SRM**；其余渠道已移除
 （`references/external-sources.md`）。
 
-## 测试
+## 源码验证
 
 ```bash
-.venv/bin/python -m pytest tests -q        # 当前回归包含 T01–T18、SRM 浏览器模式与 Excel 底稿
-.venv/bin/python tests/fixtures/make_fixtures.py   # 重新生成虚构夹具
-.venv/bin/python /Users/moc/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
+python -m pytest tests -q                  # 仅适用于包含 tests/ 的源码仓库
+python tests/fixtures/make_fixtures.py     # 仅适用于源码仓库
+python <quick_validate.py> .
 ```
 
-测试夹具（`tests/fixtures/project-alpha`）全部为程序生成的虚构企业/人员/证件号；
-禁止将真实投标文件作为测试夹具。
+源码测试夹具（`tests/fixtures/project-alpha`）全部为程序生成的虚构企业/人员/证件号；
+禁止将真实投标文件作为测试夹具。精简发行包不包含 `tests/` 和测试夹具。
 
 ## 目录结构
 

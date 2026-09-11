@@ -27,7 +27,7 @@ py -3.12 -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe scripts\preflight.py <项目目录> --profile report
 .\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe /Users/moc/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
+.\.venv\Scripts\python.exe <quick_validate.py> .
 ```
 
 实际安装前先运行 `preflight.py`，把缺失依赖和技术标跳过策略一次性提交确认；只安装确认
