@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tender-clearance.local/schemas/process-workpaper.v1.json",
+  "title": "Tender Clearance Process Workpaper",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run", "documents", "facts", "quality", "source_artifacts"],
+  "properties": {
+    "schema_version": {"const": "tender-clearance.process-workpaper.v1"},
+    "run": {"type": "object"},
+    "documents": {"type": "array", "items": {"type": "object"}},
+    "facts": {"type": "array", "items": {"type": "object"}},
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_ocr_pages", "completed_ocr_pages", "terminal_ocr_pages", "pending_ocr_pages", "ocr_results_complete"],
+      "properties": {
+        "expected_ocr_pages": {"type": "integer", "minimum": 0},
+        "completed_ocr_pages": {"type": "integer", "minimum": 0},
+        "terminal_ocr_pages": {"type": "integer", "minimum": 0},
+        "pending_ocr_pages": {"type": "integer", "minimum": 0},
+        "pending_ocr_job_ids": {"type": "array", "items": {"type": "string"}},
+        "low_confidence_facts": {"type": "integer", "minimum": 0},
+        "ocr_results_complete": {"type": "boolean"}
+      }
+    },
+    "source_artifacts": {"type": "object"}
+  }
+}

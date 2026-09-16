@@ -46,7 +46,7 @@ from tc.models import (
 from tc.projio import ProjectError, ensure_output_dirs, load_project_config
 from tc.srm_gate import SrmReportGateError, validate_srm_report_gate
 from tc.normalize import normalize_company_name
-from tc.process_artifacts import build_process_artifacts
+from tc.process_artifacts import build_process_artifacts, ocr_completion, validate_report_input
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "清标报告.md.jinja"
 
@@ -98,6 +98,24 @@ def run(
         entities=entities,
         findings=findings,
     )
+    report_input = load_json(interim / "report-input.json")
+    forbidden = validate_report_input(report_input)
+    if forbidden:
+        typer.secho(
+            f"[错误] report-input.json 含禁止进入报告上下文的字段：{', '.join(forbidden)}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=6)
+    completion = ocr_completion(project_dir)
+    if not skip_srm_gate and not completion["terminal"]:
+        typer.secho(
+            f"[错误] OCR 尚未全部完成：仍有 {len(completion['pending_job_ids'])} 个任务没有终态；"
+            "正式报告已阻断，请先补齐 OCR 结果或提交明确的失败/阻断结果",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=5)
     out_dir, interim = ensure_output_dirs(project_dir)
 
     evidence: dict[str, Evidence] = {}
@@ -122,7 +140,7 @@ def run(
     result_path = out_dir / "清标结果.json"
     write_json(result_path, bundle.model_dump(mode="json"))
 
-    ctx = _build_context(cfg, inventory, entities, meta, ext, findings, evidence, low_conf_ids, content, project_dir, bid_analysis)
+    ctx = _build_context(cfg, inventory, entities, meta, ext, findings, evidence, low_conf_ids, content, project_dir, bid_analysis, report_input)
     md_path = out_dir / "清标报告.md"
     _render_markdown(ctx, md_path)
 
@@ -308,16 +326,16 @@ def _cover_tenderer_candidates(content: ContentFile, inventory: InventoryFile,
     return [value for value, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
 
 
-def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content, project_dir: Path, bid_analysis: dict | None = None) -> dict:
+def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content, project_dir: Path, bid_analysis: dict | None = None, report_input: dict | None = None) -> dict:
     names = _sup_name(entities)
     sups = entities.suppliers
     findings = findings_file.findings
     quote_by_supplier = {str(x.get("supplier_id")): x for x in (bid_analysis or {}).get("suppliers", [])}
     # 新口径：公共项只接受封面第一页；主体信息只接受商务标。
     project_values: dict[str, list[str]] = {k: [] for k in ("tenderer", "project_name", "project_code", "bid_date")}
-    for fr in content.fields:
-        if fr.field in project_values and fr.normalized:
-            project_values[fr.field].append(fr.value_masked)
+    for fr in (report_input or {}).get("facts", []):
+        if fr.get("field") in project_values and fr.get("normalized"):
+            project_values[fr["field"]].append(str(fr.get("value") or ""))
     project_identity = {k: sorted(set(v)) for k, v in project_values.items()}
     # 商务标首页常以标题直接出现招标人，没有“招标人：”标签；在已提取
     # 公共字段为空时，使用同页公司名候选补齐，但不能把投标人冒充招标人。

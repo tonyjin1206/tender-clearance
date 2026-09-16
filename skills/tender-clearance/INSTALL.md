@@ -31,6 +31,10 @@ py scripts\install_environment.py -- py -3.12 -m pip install -r requirements-cor
 的参考实现使用 PaddleOCR `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`，并返回块坐标；
 如果客户已有本地 Agent OCR，可复用其能力，但必须经过能力声明和真实扫描页验收。
 
+宿主 Agent 不应把 OCR 原文或置信度打印到普通消息；结果写入项目中间产物后，由 Core
+生成 `process-workpaper.json` 和不含 OCR 块/置信度数值的 `report-input.json`。正式报告
+前每个 OCR 任务必须有终态，缺失任务会阻断正式报告。
+
 ## 安装检查
 
 ```powershell

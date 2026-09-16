@@ -225,6 +225,8 @@ def test_paddle_provider_emits_collapsible_page_progress_without_ocr_text(capsys
     assert event["collapsible"] is True
     assert event["visibility"] == "model_only"
     assert event["page"] == 3
+    assert "confidence" not in event
+    assert "location_precision" not in event
     assert "敏感原文" not in events[0]
 
 

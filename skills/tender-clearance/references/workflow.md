@@ -30,6 +30,7 @@ flowchart TD
 | 外部导入 | `import_external_evidence.py` | external-evidence/ | `external.json` + `evidence-external.json` |
 | 外部刷新（报告前置） | `query_sources.py` | entities + 用户本次提供的 SRM 凭据 + 明确启用渠道 | 合并入 `external.json`（+`evidence-external-queries.json`）；SRM 登录成功但无结果为 `no_result` |
 | 规则评估 | `assess_risk.py` | 全部中间产物 | `findings.json`（含 coverage、人工复核队列） |
+| 过程底稿/报告安全输入 | `render_report.py` 内置 materialize | `content.json`、OCR 任务/结果及前序结构化产物 | `process-workpaper.json`、`report-input.json` |
 | 渲染 | `render_report.py --profile report/review/workpaper` | 全部中间产物与缓存 | 根目录验收基准 + `output/exports/<profile>/` |
 | 校验 | `validate_project.py` | 项目目录 | 结构校验结果（exit 0/1） |
 
@@ -53,6 +54,9 @@ flowchart TD
 商务页的证照图片仍建立页级 OCR 任务。文档缓存以源 SHA 复用底层解析快照，
 但内容/属性结果还校验文档身份、文件名分类、脱敏模式和 Provider 配置，避免同内容副本
 串用证据路径。
+
+报告只读取已存在的中间产物和缓存，不触发 OCR 或外部查询。正式报告还要求所有 OCR
+任务已有终态；离线草稿允许缺页但必须保留 `ocr_unavailable` 和人工复核缺口。
 
 ## 关键规则
 

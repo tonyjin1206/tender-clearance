@@ -203,3 +203,14 @@ output/
 不满足时只复用解析快照并重新生成阶段结果，避免同内容副本串用证据路径。OCR 缓存至少
 包含源文件、页、页图像、Provider/版本、模型集合、推理引擎、语言和模式指纹。输入、模型
 或运行时改变时自动失效；报告只读取已存在的中间产物和缓存，不触发 OCR 或外部查询。
+
+### 8.1 上下文防火墙与报告输入
+
+`ocr-results.json` 和 `output/cache/ocr/` 是本地 OCR 审计层，原始文本块、坐标、置信度
+和 Provider 信息不得通过普通消息或进度事件返回给宿主 Agent。`process-workpaper.json`
+保存字段级事实和质量信息；`report-input.json` 是报告安全输入，只保留报告字段、复核状态、
+证据引用和 OCR 完成状态，不包含 OCR 块、原文、置信度数值、坐标或模型详情。
+
+正式报告要求 `ocr-jobs.json` 中的每个任务在 `ocr-results.json` 中有终态。`succeeded`、
+`failed`、`blocked`、`not_supported`、`cancelled` 都是终态；缺失任务是 `pending`，不能
+伪装成成功或无风险。离线草稿可以输出缺口，但不得绕过人工复核标记。

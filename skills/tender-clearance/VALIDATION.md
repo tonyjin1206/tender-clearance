@@ -122,6 +122,20 @@ SRM 报告门禁、正式查询状态和报告章节/导出回归也随本次测
 Markdown、PDF、证据索引和人工复核清单；扫描页无 Provider 结果时为 `ocr_unavailable`
 并进入人工复核，不转写为“无风险”。
 
+## 2026-09-16 OCR 上下文防火墙整改
+
+- `tc/progress.py` 的进度事件改为 allowlist；OCR 原文、文本块、坐标、Provider 详情和
+  数值置信度不会进入宿主 Agent 的过程事件。
+- 新增 `process-workpaper.json` 与 `report-input.json`。前者保留字段级质量信息，后者
+  只保留报告字段、复核状态和证据引用；渲染前执行禁用键递归校验。
+- `write_json()` 使用同目录临时文件和原子替换；正式报告和 `validate_project.py --stage final`
+  要求所有 OCR 任务在 `ocr-results.json` 中有终态，缺失结果不能伪装为完成。
+- 新增上下文防火墙、过程底稿、安全输入 Schema 和正式报告门禁测试；专项组合回归为
+  **22 passed**；本次依赖恢复后的包级全量回归为 **134 passed, 5 warnings**。
+- 额外验证：`python -m compileall -q scripts`、`validate_project.py --stage interim` 和
+  `git diff --check` 均通过。正式报告缺失 OCR 终态时，门禁返回退出码 5；离线草稿路径
+  仍可生成并保留 `ocr_unavailable` / 人工复核状态。
+
 ## 尚未宣称通过的项目验收
 
 - Windows 11 Core 安装耗时、Provider 安装耗时和包/模型体积：`[待确认]`，当前未在

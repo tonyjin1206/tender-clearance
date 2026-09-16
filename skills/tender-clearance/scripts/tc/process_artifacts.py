@@ -7,14 +7,21 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from .canon import write_json
-from .models import ContentFile, EntitiesFile, FindingsFile, InventoryFile
+from .models import ContentFile, EntitiesFile, FindingsFile, InventoryFile, OCRJobFile, OCRResultFile
 
 
 _REPORT_LOCATION_KEYS = {"kind", "page", "sheet", "cell", "table", "row", "col", "index", "cover"}
+_OCR_TERMINAL_STATUSES = {"succeeded", "failed", "blocked", "not_supported", "cancelled"}
+REPORT_INPUT_FORBIDDEN_KEYS = frozenset({
+    "text", "raw_text", "ocr_text", "blocks", "confidence", "average_confidence",
+    "bbox", "provider", "provider_id", "provider_version", "model", "models",
+    "inference_engine", "location_precision", "processing_location",
+})
 
 
 def _report_location(location: dict[str, Any]) -> dict[str, Any]:
@@ -56,6 +63,55 @@ def _field_fact(field: Any, *, include_quality: bool) -> dict[str, Any]:
     return fact
 
 
+def ocr_completion(project_dir: Path) -> dict[str, Any]:
+    """按任务 ID 判断 OCR 是否全部有终态，缺失结果不能冒充已完成。"""
+    interim = project_dir / "output" / "interim"
+    jobs_path = interim / "ocr-jobs.json"
+    results_path = interim / "ocr-results.json"
+    jobs = OCRJobFile(**json.loads(jobs_path.read_text(encoding="utf-8"))).jobs if jobs_path.exists() else []
+    results = OCRResultFile(**json.loads(results_path.read_text(encoding="utf-8"))).results if results_path.exists() else []
+    expected_ids = {job.job_id for job in jobs}
+    result_by_job = {result.job_id: result for result in results if result.job_id in expected_ids}
+    pending = sorted(expected_ids - set(result_by_job))
+    terminal = sorted(
+        job_id for job_id, result in result_by_job.items()
+        if result.status in _OCR_TERMINAL_STATUSES
+    )
+    succeeded = sorted(
+        job_id for job_id, result in result_by_job.items()
+        if result.status == "succeeded"
+    )
+    non_success = sorted(
+        job_id for job_id, result in result_by_job.items()
+        if result.status != "succeeded"
+    )
+    return {
+        "expected_jobs": len(expected_ids),
+        "terminal_jobs": len(terminal),
+        "succeeded_jobs": len(succeeded),
+        "non_success_jobs": len(non_success),
+        "pending_job_ids": pending,
+        "terminal": len(pending) == 0,
+    }
+
+
+def validate_report_input(payload: dict[str, Any]) -> list[str]:
+    """返回报告安全输入中的禁用键；供渲染前做最后一道防线。"""
+    found: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            found.update(str(key) for key in value if key in REPORT_INPUT_FORBIDDEN_KEYS)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    return sorted(found)
+
+
 def build_process_artifacts(
     project_dir: Path,
     *,
@@ -68,8 +124,9 @@ def build_process_artifacts(
     interim = project_dir / "output" / "interim"
     process_facts = [_field_fact(field, include_quality=True) for field in content.fields]
     report_facts = [_field_fact(field, include_quality=False) for field in content.fields]
-    expected_ocr_pages = sum(len(doc.scanned_pages) for doc in content.documents)
-    completed_ocr_pages = sum(len(doc.ocr_pages) for doc in content.documents)
+    completion = ocr_completion(project_dir)
+    expected_ocr_pages = completion["expected_jobs"]
+    completed_ocr_pages = completion["succeeded_jobs"]
     review_count = sum(1 for field in content.fields if field.low_confidence)
 
     process_workpaper: dict[str, Any] = {
@@ -90,8 +147,11 @@ def build_process_artifacts(
         "quality": {
             "expected_ocr_pages": expected_ocr_pages,
             "completed_ocr_pages": completed_ocr_pages,
+            "terminal_ocr_pages": completion["terminal_jobs"],
+            "pending_ocr_pages": len(completion["pending_job_ids"]),
+            "pending_ocr_job_ids": completion["pending_job_ids"],
             "low_confidence_facts": review_count,
-            "ocr_results_complete": expected_ocr_pages == completed_ocr_pages,
+            "ocr_results_complete": completion["terminal"],
         },
         "source_artifacts": {
             "ocr_results": "output/interim/ocr-results.json",
@@ -107,8 +167,10 @@ def build_process_artifacts(
         "quality": {
             "expected_ocr_pages": expected_ocr_pages,
             "completed_ocr_pages": completed_ocr_pages,
+            "terminal_ocr_pages": completion["terminal_jobs"],
+            "pending_ocr_pages": len(completion["pending_job_ids"]),
             "review_required_facts": review_count,
-            "ocr_results_complete": expected_ocr_pages == completed_ocr_pages,
+            "ocr_results_complete": completion["terminal"],
         },
         "entities": entities.model_dump(mode="json") if entities else None,
         "findings": findings.model_dump(mode="json") if findings else None,
@@ -121,4 +183,3 @@ def build_process_artifacts(
     write_json(interim / "process-workpaper.json", process_workpaper)
     write_json(interim / "report-input.json", report_input)
     return process_workpaper, report_input
-

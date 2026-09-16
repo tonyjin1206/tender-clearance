@@ -26,6 +26,7 @@ import yaml
 
 from tc.projio import REQUIRED_PROJECT_FIELDS, ProjectError
 from tc.models import EntitiesFile, ExternalEvidenceFile
+from tc.process_artifacts import ocr_completion
 from tc.srm_gate import SrmReportGateError, validate_srm_report_gate
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
@@ -42,6 +43,8 @@ INTERIM_FILES = {
     "evidence-content.json": "evidence.schema.json",
     "evidence-metadata.json": "evidence.schema.json",
     "evidence-external.json": "evidence.schema.json",
+    "process-workpaper.json": "process-workpaper.schema.json",
+    "report-input.json": "report-input.schema.json",
 }
 
 app = typer.Typer(help="校验项目输入与产物结构")
@@ -140,6 +143,14 @@ def run(
             validate_srm_report_gate(entities, external)
         except SrmReportGateError as exc:
             problems.append(Problem("output/interim/external.json", str(exc)))
+
+    if stage == "final" and not problems:
+        completion = ocr_completion(project_dir)
+        if not completion["terminal"]:
+            problems.append(Problem(
+                "output/interim/ocr-results.json",
+                f"仍有 {len(completion['pending_job_ids'])} 个 OCR 任务无终态，不能作为正式报告输入",
+            ))
 
     if problems:
         typer.secho(f"[FAIL] 项目校验未通过（{len(problems)} 个问题）：", fg=typer.colors.RED, err=True)

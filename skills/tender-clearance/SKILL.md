@@ -74,7 +74,12 @@ description: 对同一采购项目多家供应商标书做文件盘点、主体�
 - `normalize_and_match.py` + `analyze_bid_data.py`：主体、人员、联系方式和文件属性交叉匹配；
 - `import_external_evidence.py` + `query_sources.py`：导入与授权 live 查询；导入阶段增量合并，不清空已有 live 结果；
 - `assess_risk.py`：规则、证据强度、等级、覆盖矩阵和人工复核队列；
-- `render_report.py`：报告和导出副本；报告阶段不触发 OCR、联网或安装。
+- `render_report.py`：报告和导出副本；报告阶段不触发 OCR、联网或安装。它同时生成
+  `output/interim/process-workpaper.json` 与 `report-input.json`；前者保留字段级质量信息，
+  后者不含 OCR 原文、文本块、坐标、模型详情或数值置信度。
+
+正式报告前，`ocr-jobs.json` 中的每个任务必须在 `ocr-results.json` 中有明确终态；缺页时
+正式报告阻断，离线草稿可继续但必须保留人工复核缺口。
 
 `report` 输出 JSON、Markdown、PDF、证据索引 CSV、人工复核 CSV；`review` 另含 DOCX；`workpaper` 另含 Excel。正式报告前必须运行：
 
@@ -90,6 +95,7 @@ $PY scripts/validate_project.py $P --stage final
 - `references/data-contract.md`：OCR、字段、缓存或脱敏契约；
 - `references/external-sources.md`：渠道、授权和 SRM 状态；
 - `references/report-spec.md`：报告字段、章节或档位；
-- `references/evidence-and-risk-rules.md`：规则解释或发现口径。
+- `references/evidence-and-risk-rules.md`：规则解释或发现口径；
+- `schemas/process-workpaper.schema.json`、`schemas/report-input.schema.json`：过程底稿与报告安全输入契约。
 
 详细安全/保留策略见 `references/security-and-retention.md`；安装只看 `INSTALL.md` 和预检结果。
