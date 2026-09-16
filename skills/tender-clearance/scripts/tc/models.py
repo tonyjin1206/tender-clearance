@@ -479,7 +479,7 @@ class Finding(_Strict):
     rules_version: str
     domain: Literal[
         "identity", "metadata", "ownership", "judicial",
-        "dishonesty", "coverage",
+        "dishonesty", "coverage", "extraction",
     ]
     level: AlertLevel
     evidence_strength: EvidenceStrength
@@ -528,6 +528,7 @@ class ReportBundle(_Strict):
     metadata: MetadataFile
     external: ExternalEvidenceFile
     findings: FindingsFile
+    bid_analysis: dict[str, Any] = Field(default_factory=dict)
     evidence: EvidenceFile
 
 

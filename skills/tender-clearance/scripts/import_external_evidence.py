@@ -28,6 +28,7 @@ import typer
 from tc.canon import load_json, stable_id, write_json
 from tc.models import (
     EvidenceFile,
+    Evidence,
     ExternalEvidenceFile,
     ExternalQuery,
     ExternalRecord,
@@ -64,35 +65,91 @@ def run(
     builder = EvidenceBuilder(inventory.run, cfg.id_digest_salt, cfg.redaction_mode)
 
     ext_base = project_dir / "external-evidence"
-    queries: list[ExternalQuery] = []
-    records: list[ExternalRecord] = []
-    ownership: list[OwnershipRelation] = []
-    notes: list[str] = []
-
+    import_files: list[tuple[str, Path]] = []
     if ext_base.exists():
         for source_id, sub in IMPORT_DIRS.items():
             base = ext_base / sub
             if not base.exists():
                 continue
-            for path in sorted(base.rglob("*")):
-                if not path.is_file() or path.name.startswith(".") or path.name.endswith(".meta.json"):
-                    continue
-                try:
-                    qs, rs, ow, note = _import_file(path, source_id, entities, builder, project_dir)
-                except Exception as exc:  # noqa: BLE001
-                    qs, rs, ow = _failed_query(source_id, path, str(exc))
-                    note = None
-                queries.extend(qs)
-                records.extend(rs)
-                ownership.extend(ow)
-                if note:
-                    notes.append(note)
+            import_files.extend(
+                (source_id, path)
+                for path in sorted(base.rglob("*"))
+                if path.is_file() and not path.name.startswith(".") and not path.name.endswith(".meta.json")
+            )
+
+    # 增量导入：没有新的导入文件时，绝不清空上轮 live 查询；同一导入渠道有新文件时，
+    # 只替换旧的 manual_import 证据，保留浏览器/API 查询结果供后续阶段复用。
+    prior = None
+    prior_evidence: list[Evidence] = []
+    prior_path = interim / "external.json"
+    if prior_path.exists():
+        try:
+            prior = ExternalEvidenceFile(**load_json(prior_path))
+        except (OSError, TypeError, ValueError):
+            prior = None
+    evidence_path = interim / "evidence-external.json"
+    if evidence_path.exists():
+        try:
+            prior_evidence = [Evidence(**item) for item in load_json(evidence_path).get("evidence", [])]
+        except (OSError, TypeError, ValueError):
+            prior_evidence = []
+    import_source_ids = {source_id for source_id, _ in import_files}
+    same_run = bool(prior and prior.run.run_id == inventory.run.run_id)
+    replaced_query_ids = {
+        q.query_id for q in (prior.queries if prior else [])
+        if same_run and q.source_id in import_source_ids and q.query_mode == "manual_import"
+    }
+    replaced_evidence_ids = {
+        evidence_id
+        for q in (prior.queries if prior else []) if q.query_id in replaced_query_ids
+        for evidence_id in q.evidence_ids
+    }
+    queries: list[ExternalQuery] = []
+    records: list[ExternalRecord] = []
+    ownership: list[OwnershipRelation] = []
+    notes: list[str] = []
+
+    for source_id, path in import_files:
+        try:
+            qs, rs, ow, note = _import_file(path, source_id, entities, builder, project_dir)
+        except Exception as exc:  # noqa: BLE001
+            qs, rs, ow = _failed_query(source_id, path, str(exc))
+            note = None
+        queries.extend(qs)
+        records.extend(rs)
+        ownership.extend(ow)
+        if note:
+            notes.append(note)
+
+    if prior and same_run and not import_source_ids:
+        queries.extend(prior.queries)
+        records.extend(prior.records)
+        ownership.extend(prior.ownership)
+    elif prior and same_run:
+        queries.extend(q for q in prior.queries if q.query_id not in replaced_query_ids)
+        records.extend(
+            r for r in prior.records
+            if not (set(r.evidence_ids) & replaced_evidence_ids)
+        )
+        ownership.extend(
+            o for o in prior.ownership
+            if not (set(o.evidence_ids) & replaced_evidence_ids)
+        )
+
+    evidence_map = {
+        e.evidence_id: e for e in prior_evidence
+        if same_run and e.evidence_id not in replaced_evidence_ids
+    }
+    evidence_map.update({e.evidence_id: e for e in builder.items})
 
     result = ExternalEvidenceFile(
-        run=inventory.run, queries=queries, records=records, ownership=ownership
+        run=inventory.run,
+        queries=list({q.query_id: q for q in queries}.values()),
+        records=list({r.record_id: r for r in records}.values()),
+        ownership=list({o.relation_id: o for o in ownership}.values()),
     )
     write_json(interim / "external.json", result.model_dump(mode="json"))
-    ev = EvidenceFile(run=inventory.run, evidence=builder.items)
+    ev = EvidenceFile(run=inventory.run, evidence=list(evidence_map.values()))
     write_json(interim / "evidence-external.json", ev.model_dump(mode="json"))
     write_json(interim / "external-notes.json", {"run": inventory.run.model_dump(mode="json"), "notes": notes})
 

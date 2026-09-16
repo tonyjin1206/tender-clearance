@@ -27,6 +27,7 @@ from tc.models import (
     AlertLevel,
     ContentFile,
     CoverageEntry,
+    ContentFile,
     EntitiesFile,
     Evidence,
     EvidenceStrength,
@@ -158,6 +159,7 @@ def run(
     findings += _external_record_rules(book, cfg, ext, evmap, project_dir=project_dir)
     coverage = _build_coverage(ext, entities)
     findings += _coverage_rule(book, coverage, evmap)
+    findings += _extraction_gap_rule(book, inventory, content, entities)
 
     findings.sort(key=lambda f: (f.rule_id, f.finding_id))
     queue = sorted(f.finding_id for f in findings if f.status == "human_review_required")
@@ -733,6 +735,50 @@ def _coverage_rule(book: RuleBook, coverage: list[CoverageEntry], evmap) -> list
             ),
             strength="D",
             recommendation="补齐人工查询或授权导入；对 blocked/failed 渠道在复核时说明原因",
+        ))
+    return out
+
+
+def _extraction_gap_rule(book: RuleBook, inventory: InventoryFile, content: ContentFile,
+                         entities: EntitiesFile) -> list[Finding]:
+    """验收问题 3/5：提取异常与低置信度字段产生强制复核项，防止“无复核发现”与数据缺口并存。"""
+    dir_to_id = {s.directory_name: s.supplier_id for s in entities.suppliers}
+
+    def _supplier_of(rel_path: str | None) -> str | None:
+        if not rel_path:
+            return None
+        for d in inventory.supplier_dirs:
+            if rel_path.startswith(f"bids/{d}/"):
+                return d
+        return None
+
+    anomalies_by_sup: dict[str | None, list[str]] = {}
+    for a in [*inventory.anomalies, *content.anomalies]:
+        anomalies_by_sup.setdefault(_supplier_of(a.relative_path), []).append(a.detail or a.anomaly)
+    lowconf_by_sup: dict[str | None, int] = {}
+    for f in content.fields:
+        if f.low_confidence:
+            key = f.supplier_dir if (f.supplier_dir and f.supplier_dir in inventory.supplier_dirs) else _supplier_of(f.relative_path)
+            lowconf_by_sup[key] = lowconf_by_sup.get(key, 0) + 1
+
+    out: list[Finding] = []
+    for sup in sorted(set(anomalies_by_sup) | set(lowconf_by_sup), key=lambda x: (x is None, x or "")):
+        parts: list[str] = []
+        items = anomalies_by_sup.get(sup) or []
+        if items:
+            parts.append(f"提取异常 {len(items)} 项（{'；'.join(sorted(set(items)))[:200]}）")
+        n_low = lowconf_by_sup.get(sup, 0)
+        if n_low:
+            parts.append(f"低置信度字段 {n_low} 项未参与匹配")
+        label = f"供应商 {sup}" if sup else "未归属到具体供应商的文档"
+        out.append(_finding(
+            book, "EXT-001",
+            {"rule": "EXT-001", "supplier": sup, "anomalies": len(items), "low_confidence_fields": n_low},
+            supplier_ids=[dir_to_id[sup]] if (sup and sup in dir_to_id) else [],
+            evidence_ids=[],
+            fact=f"{label}存在数据缺口：{'；'.join(parts)}。相关字段不参与主体匹配与风险结论，需人工核对原文。",
+            strength="D",
+            recommendation="人工核对扫描页/受保护文档原文；补齐 OCR 或授权导入后再重跑评估",
         ))
     return out
 

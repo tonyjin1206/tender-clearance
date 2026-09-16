@@ -91,6 +91,48 @@ def test_all_findings_have_rule_version_and_evidence_semantics(alpha_findings):
     for f in alpha_findings["findings"]:
         assert f["rules_version"]
         assert f["finding_id"].startswith("FD-")
-        # COV-001 之外不存没有证据的断言
-        if f["rule_id"] != "COV-001":
+        # 缺口类规则（COV-001 查询缺口、EXT-001 提取缺口）之外不存没有证据的断言
+        if f["rule_id"] not in ("COV-001", "EXT-001"):
             assert f["evidence_ids"], f["finding_id"]
+
+
+def test_acceptance_no_zero_review_with_gaps(alpha_findings, alpha_project):
+    """验收问题 3：存在查询缺口/提取异常/低置信度时，供应商不得出现“必须人工复核 0 项”。
+
+    判定统一在评估层：COV-001（查询缺口）与 EXT-001（提取缺口）均强制人工复核，
+    且按 supplier_ids 归属到具体供应商行。
+    """
+    import json
+
+    ents = json.loads((alpha_project / "output/interim/entities.json").read_text(encoding="utf-8"))
+    coverage = {
+        (c["supplier_id"], c["source_id"]): c["status"]
+        for c in alpha_findings["coverage"]
+    }
+    queue = set(alpha_findings["human_review_queue"])
+    for s in ents["suppliers"]:
+        has_gap = any(
+            status not in ("match", "no_match_verified")
+            for (sid, _src), status in coverage.items()
+            if sid == s["supplier_id"]
+        )
+        if not has_gap:
+            continue
+        review_count = sum(
+            1 for f in alpha_findings["findings"]
+            if s["supplier_id"] in f["supplier_ids"] and f["finding_id"] in queue
+        )
+        assert review_count > 0, (
+            f"{s['display_name']} 存在查询缺口但复核计数为 0：报告矛盾（验收问题 3）"
+        )
+
+
+def test_acceptance_extraction_gap_rule(alpha_findings, alpha_project):
+    """验收问题 3/5：提取异常（扫描页未 OCR、密码保护）与低置信度字段产生 EXT-001 强制复核。"""
+    gaps = _findings_of(alpha_findings, "EXT-001")
+    assert gaps, "夹具含扫描页与密码保护文档，应产生 EXT-001"
+    for f in gaps:
+        assert f["level"] == "III"
+        assert f["status"] == "human_review_required"
+        assert f["finding_id"] in alpha_findings["human_review_queue"]
+        assert "数据缺口" in f["fact"]

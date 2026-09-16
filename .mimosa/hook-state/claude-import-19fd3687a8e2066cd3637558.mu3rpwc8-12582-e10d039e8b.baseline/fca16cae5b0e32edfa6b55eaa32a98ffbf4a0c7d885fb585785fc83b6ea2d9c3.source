@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Read(//Users/moc/.codex/skills/.system/skill-creator/scripts/**)",
+      "Read(//Users/moc/.codex/skills/**)",
+      "Bash(uv venv *)",
+      "Bash(uv pip *)",
+      "Bash(tail -3 /private/tmp/claude-501/-Users-moc-workspace-Tender-Evaluation-Report/9d779baa-e6eb-4818-aa96-8ddc47c634ae/tasks/b9efnww24.output 2>/dev/null; ls /Users/moc/workspace/Tender_Evaluation_Report/skills/tender-clearance/.venv/bin/python 2>/dev/null && echo VENV_READY)",
+      "Bash(python3 -)",
+      "Bash(.venv/bin/python -)",
+      "Bash(.venv/bin/python -m pytest tests -q)",
+      "Bash(SRM_USER='18987481206' SRM_PASSWORD='faqc@2023' .venv/bin/python scripts/srm_browser_selftest.py '腾讯云计算（北京）有限责任公司')"
+    ]
+  }
+}

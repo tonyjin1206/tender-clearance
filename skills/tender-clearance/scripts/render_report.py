@@ -45,6 +45,8 @@ from tc.models import (
 )
 from tc.projio import ProjectError, ensure_output_dirs, load_project_config
 from tc.srm_gate import SrmReportGateError, validate_srm_report_gate
+from tc.normalize import normalize_company_name
+from tc.process_artifacts import build_process_artifacts
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "清标报告.md.jinja"
 
@@ -76,6 +78,7 @@ def run(
         ext = ExternalEvidenceFile(**load_json(interim / "external.json"))
         findings = FindingsFile(**load_json(interim / "findings.json"))
         content = ContentFile(**load_json(interim / "content.json"))
+        bid_analysis = load_json(interim / "bid-analysis.json") if (interim / "bid-analysis.json").exists() else {}
     except (ProjectError, FileNotFoundError) as exc:
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
@@ -85,6 +88,16 @@ def run(
         except SrmReportGateError as exc:
             typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=4)
+
+    # 生成过程底稿和报告安全输入。二者都写入本地项目目录；渲染器继续直接
+    # 使用结构化中间产物，不把 OCR 原文、块坐标或数值置信度交给宿主对话。
+    build_process_artifacts(
+        project_dir,
+        inventory=inventory,
+        content=content,
+        entities=entities,
+        findings=findings,
+    )
     out_dir, interim = ensure_output_dirs(project_dir)
 
     evidence: dict[str, Evidence] = {}
@@ -103,12 +116,13 @@ def run(
     bundle = ReportBundle(
         run=inventory.run, project=cfg, inventory=inventory, entities=entities,
         matches=matches, metadata=meta, external=ext, findings=findings,
+        bid_analysis=bid_analysis,
         evidence=EvidenceFile(run=inventory.run, evidence=sorted(evidence.values(), key=lambda x: x.evidence_id)),
     )
     result_path = out_dir / "清标结果.json"
     write_json(result_path, bundle.model_dump(mode="json"))
 
-    ctx = _build_context(cfg, inventory, entities, meta, ext, findings, evidence, low_conf_ids, content, project_dir)
+    ctx = _build_context(cfg, inventory, entities, meta, ext, findings, evidence, low_conf_ids, content, project_dir, bid_analysis)
     md_path = out_dir / "清标报告.md"
     _render_markdown(ctx, md_path)
 
@@ -183,7 +197,7 @@ def _find_sensitive(text: str) -> list[str]:
 
 
 def _sup_name(entities: EntitiesFile) -> dict[str, str]:
-    return {s.supplier_id: s.display_name for s in entities.suppliers}
+    return {s.supplier_id: _display_company_name(s.display_name) for s in entities.suppliers}
 
 
 _LEVEL_LABEL: dict[AlertLevel, str] = {"I": "I 级（高）", "II": "II 级（中）", "III": "III 级（低）"}
@@ -200,6 +214,27 @@ _DOMAIN_LABEL = {
     "dishonesty": "违法失信",
     "coverage": "查询覆盖",
 }
+
+_QUERY_STATUS_LABEL = {
+    "match": "已查询到匹配记录",
+    "no_match_verified": "已查询，未发现匹配记录",
+    "no_result": "已查询，但结果无法判定",
+    "not_queried": "未查询",
+    "blocked": "访问受阻",
+    "failed": "查询失败",
+    "needs_manual_review": "待人工复核",
+}
+
+
+def _display_company_name(value: str | None) -> str:
+    """报告展示名：去除扫描件中的盖章注记，原始证据不做改写。"""
+    if not value:
+        return ""
+    return re.sub(r"\s*[（(](?:公章|盖章|签章)[）)]\s*$", "", str(value)).strip()
+
+
+def _query_status_label(value: str | None) -> str:
+    return _QUERY_STATUS_LABEL.get(str(value or ""), "未取得")
 
 
 def _frow(f: Finding, names: dict[str, str]) -> dict:
@@ -224,30 +259,115 @@ def _frow(f: Finding, names: dict[str, str]) -> dict:
     }
 
 
-def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content, project_dir: Path) -> dict:
+def _first_field_value(fields: dict[str, object], keys: tuple[str, ...]) -> str:
+    """读取外部画像中的第一个有效字段值，不把占位符当作事实。"""
+    placeholders = {"", "-", "--", "暂无", "无", "未返回", "未取得"}
+    for key in keys:
+        value = str(fields.get(key) or "").strip()
+        if value not in placeholders:
+            return value
+    return ""
+
+
+def _cover_tenderer_candidates(content: ContentFile, inventory: InventoryFile,
+                               suppliers: list) -> list[str]:
+    """从商务标首页的可追溯企业名候选中识别招标人。
+
+    首页通常同时出现招标人和投标人；只接受商务标首页、非低置信度、
+    可完整匹配公司名称的候选，并排除已归组的投标人。没有足够证据时
+    返回空列表，由报告保留“未取得”，不把投标人名称冒充招标人。
+    """
+    business_docs = {
+        d.document_id for d in inventory.documents
+        if d.category == "bid" and d.bid_subtype == "business"
+    }
+    def subject_key(value: str) -> str:
+        value = re.sub(r"[（(](?:公章|盖章|签章)[）)]$", "", value.strip())
+        return normalize_company_name(value)
+
+    supplier_keys = {subject_key(s.declared_name or s.display_name) for s in suppliers}
+    exact_company = re.compile(
+        r"^[一-龥A-Za-z0-9（）()]{4,60}(?:股份有限公司|有限责任公司|有限公司|集团公司)$"
+    )
+    counts: dict[str, int] = {}
+    for field in content.fields:
+        if (
+            field.field != "company_name"
+            or field.document_id not in business_docs
+            or field.location.get("page") != 1
+            or not field.location.get("cover")
+            or field.low_confidence
+        ):
+            continue
+        value = str(field.normalized or field.value_masked or "").strip()
+        if not exact_company.fullmatch(value):
+            continue
+        if subject_key(value) in supplier_keys:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return [value for value, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content, project_dir: Path, bid_analysis: dict | None = None) -> dict:
     names = _sup_name(entities)
     sups = entities.suppliers
     findings = findings_file.findings
+    quote_by_supplier = {str(x.get("supplier_id")): x for x in (bid_analysis or {}).get("suppliers", [])}
     # 新口径：公共项只接受封面第一页；主体信息只接受商务标。
     project_values: dict[str, list[str]] = {k: [] for k in ("tenderer", "project_name", "project_code", "bid_date")}
     for fr in content.fields:
         if fr.field in project_values and fr.normalized:
             project_values[fr.field].append(fr.value_masked)
     project_identity = {k: sorted(set(v)) for k, v in project_values.items()}
+    # 商务标首页常以标题直接出现招标人，没有“招标人：”标签；在已提取
+    # 公共字段为空时，使用同页公司名候选补齐，但不能把投标人冒充招标人。
+    if not project_identity["tenderer"]:
+        project_identity["tenderer"] = _cover_tenderer_candidates(content, inventory, sups)
+    # project.yaml 的 bid_deadline 是用户在流程开始前确认的截止时间。报告
+    # 不把截止时间伪装成某家公司的“投标日期”，统一用明确的合并口径展示。
+    if not project_identity["bid_date"] and cfg.bid_deadline is not None:
+        deadline_date = cfg.bid_deadline.date().isoformat() if hasattr(cfg.bid_deadline, "date") else str(cfg.bid_deadline)
+        project_identity["bid_date"] = [f"{deadline_date}（投标截止时间）"]
+    # SRM 企业画像是公司代码、法人信息的优先来源；商务标只负责授权代表。
+    # 这里按供应商聚合 registration，避免把 SRM 查询结果漏在第 3 节而不回填第 2 节。
+    srm_registration_by_supplier: dict[str, dict[str, object]] = {}
+    for record in ext.records:
+        if record.record_kind != "registration" or not record.supplier_id or not record.fields:
+            continue
+        previous = srm_registration_by_supplier.get(record.supplier_id)
+        if previous is None or len(record.fields) > len(previous["fields"]):
+            srm_registration_by_supplier[record.supplier_id] = {
+                "fields": dict(record.fields),
+                "evidence_ids": list(record.evidence_ids),
+                "subject_confirmation": record.subject_confirmation,
+            }
+
     business_rows = []
     for s in sups:
         def party(role: str, attr: str) -> str:
             vals = [getattr(p, attr) for p in entities.parties if p.supplier_id == s.supplier_id and p.role == role]
             vals = [str(v) for v in vals if v]
             return "、".join(sorted(set(vals))) or "未取得"
+        srm_identity = srm_registration_by_supplier.get(s.supplier_id, {})
+        srm_fields = srm_identity.get("fields", {}) if isinstance(srm_identity, dict) else {}
+        if not isinstance(srm_fields, dict):
+            srm_fields = {}
+        srm_uscc = _first_field_value(srm_fields, ("统一社会信用代码", "信用代码"))
+        srm_legal_name = _first_field_value(srm_fields, ("法定代表人", "法人代表", "法人"))
+        srm_legal_id = _first_field_value(
+            srm_fields,
+            ("法定代表人身份证号", "法人代表身份证号", "法人身份证号", "法定代表人证件号"),
+        )
         business_rows.append({
-            "supplier": s.display_name,
-            "company": s.declared_name or "未取得",
-            "uscc": s.uscc or ("候选：" + "、".join(s.uscc_candidates) if s.uscc_candidates else "未取得"),
-            "legal_name": party("legal_rep", "name"),
-            "legal_id": party("legal_rep", "id_mask"),
+            "supplier": names.get(s.supplier_id, _display_company_name(s.display_name)),
+            "company": _display_company_name(s.declared_name) or "未取得",
+            "uscc": srm_uscc or s.uscc or ("候选：" + "、".join(s.uscc_candidates) if s.uscc_candidates else "未取得"),
+            "legal_name": srm_legal_name or party("legal_rep", "name"),
+            "legal_id": srm_legal_id or party("legal_rep", "id_mask"),
             "agent_name": party("bid_agent", "name"),
             "agent_id": party("bid_agent", "id_mask"),
+            "identity_source": "富奥 SRM 企业画像" if srm_identity else "标书商务标",
+            "agent_source": "标书商务标扫描页",
         })
 
     srm_queries = {
@@ -268,14 +388,14 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         if rows:
             for r in rows:
                 srm_registration.append({
-                    "supplier": supplier.display_name,
+                    "supplier": names.get(supplier.supplier_id, _display_company_name(supplier.display_name)),
                     "fields": r.fields,
                     "evidence_ids": r.evidence_ids,
                     "query_status": _srm_query_status(supplier.supplier_id),
                 })
         else:
             srm_registration.append({
-                "supplier": supplier.display_name,
+                "supplier": names.get(supplier.supplier_id, _display_company_name(supplier.display_name)),
                 "fields": {},
                 "evidence_ids": [],
                 "query_status": _srm_query_status(supplier.supplier_id),
@@ -293,15 +413,47 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         })
     for r in ext.records:
         if r.record_kind == "ownership":
+            fields = r.fields
             ownership_rows_raw.append({
                 "supplier": names.get(r.supplier_id or "", r.subject_name or "未归属"),
-                "shareholder": r.fields.get("股东名称") or r.fields.get("股东") or r.fields.get("shareholder") or "未取得",
-                "amount": str(r.fields.get("投资金额") or r.fields.get("出资额") or "未返回"),
-                "time": str(r.fields.get("认缴时间") or r.fields.get("认缴日期") or "未返回"),
-                "ratio": str(r.fields.get("认缴比例") or r.fields.get("持股比例") or "未返回"),
-                "method": str(r.fields.get("认缴出资方式") or r.fields.get("出资方式") or "未返回"),
+                "shareholder": _first_field_value(fields, (
+                    "股东名称", "股东", "shareholder", "公司名称或股东名称", "发起人名称",
+                )) or "未取得",
+                "amount": _first_field_value(fields, ("投资金额", "出资额", "认缴出资额")) or "未返回",
+                "time": _first_field_value(fields, ("认缴时间", "认缴日期")) or "未返回",
+                "ratio": _first_field_value(fields, ("认缴比例", "持股比例")) or "未返回",
+                "method": _first_field_value(fields, ("认缴出资方式", "出资方式")) or "未返回",
                 "evidence_ids": r.evidence_ids,
             })
+
+    def _ownership_key(row: dict) -> tuple[str, str, str, str]:
+        """把 SRM 同一页面的重复展示（万/万元、0.99/99.00%）归为一条。"""
+        def amount(value: object) -> str:
+            return re.sub(r"\s|万元?|人民币|元", "", str(value or "")).lower()
+        def ratio(value: object) -> str:
+            original = str(value or "")
+            text = re.sub(r"\s|%", "", original)
+            try:
+                number = float(text)
+                if "%" not in original and number <= 1:
+                    number *= 100
+                return f"{number:.6f}"
+            except ValueError:
+                return text
+        return (
+            str(row.get("supplier") or ""), str(row.get("shareholder") or ""),
+            amount(row.get("amount")), ratio(row.get("ratio")),
+        )
+
+    unique_ownership: dict[tuple[str, str, str, str, str], dict] = {}
+    for row in ownership_rows_raw:
+        key = _ownership_key(row)
+        previous = unique_ownership.get(key)
+        if previous is None:
+            unique_ownership[key] = row
+        else:
+            previous["evidence_ids"] = sorted(set(previous.get("evidence_ids", [])) | set(row.get("evidence_ids", [])))
+    ownership_rows_raw = list(unique_ownership.values())
 
     def _section_rows(record_kind: str, labels: dict[str, str]) -> list[dict]:
         out = []
@@ -343,6 +495,43 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         "分支机构": _duplicate_result(srm_branches, ["企业名称", "法人"]),
         "主要人员": _duplicate_result(srm_personnel, ["姓名", "职位"]),
     }
+
+    # SRM 工商信息统一为“横轴公司、纵轴统计项目”，避免 16 列横向表格在 PDF 中挤压、错位。
+    registration_labels = [
+        ("企业名称", ("企业名称",)),
+        ("法定代表人", ("法定代表人", "法人代表")),
+        ("注册资本", ("注册资本",)),
+        ("实缴资本", ("实缴资本",)),
+        ("成立日期", ("成立日期",)),
+        ("企业状态", ("企业状态",)),
+        ("统一社会信用代码", ("统一社会信用代码", "信用代码")),
+        ("企业类型", ("企业类型",)),
+        ("行业", ("一级行业", "行业大类", "二级行业", "三级行业", "四级行业")),
+        ("营业期限", ("营业期限",)),
+        ("参保人数", ("参保人数",)),
+        ("曾用名", ("曾用名",)),
+        ("注册地址", ("注册地址", "地址")),
+    ]
+    registration_by_supplier = {
+        r["supplier"]: r.get("fields") or {}
+        for r in srm_registration
+        if r.get("fields")
+    }
+    registration_matrix = {
+        "columns": [names.get(s.supplier_id, _display_company_name(s.display_name)) for s in sups],
+        "rows": [],
+    }
+    for label, aliases in registration_labels:
+        cells = []
+        has_value = False
+        for s in sups:
+            fields = registration_by_supplier.get(names.get(s.supplier_id, _display_company_name(s.display_name)), {})
+            value = _first_field_value(fields, aliases) or "未取得"
+            cells.append(value)
+            has_value = has_value or value != "未取得"
+        # 只保留至少有一家公司真正有数据的统计项，避免报告出现空行。
+        if has_value:
+            registration_matrix["rows"].append({"label": label, "cells": cells})
     government_screenshots = []
     for ev in evidence.values():
         if ev.field == "external.government_procurement":
@@ -369,19 +558,19 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
     for s in sups:
         rows = [f for f in findings if s.supplier_id in f.supplier_ids]
         supplier_rows.append({
-            "name": s.display_name,
+            "name": names.get(s.supplier_id, _display_company_name(s.display_name)),
             "i": sum(1 for f in rows if f.level == "I"),
             "ii": sum(1 for f in rows if f.level == "II"),
             "iii": sum(1 for f in rows if f.level == "III"),
             "review": sum(1 for f in rows if f.finding_id in review_set),
             "unfinished": unfinished_by_sup.get(s.supplier_id, 0),
-            "srm_status": coverage_map.get((s.supplier_id, "srm"), "not_queried"),
-            "gov_status": coverage_map.get((s.supplier_id, "government_procurement"), "not_queried"),
+            "srm_status": _query_status_label(coverage_map.get((s.supplier_id, "srm"), "not_queried")),
+            "gov_status": _query_status_label(coverage_map.get((s.supplier_id, "government_procurement"), "not_queried")),
         })
     coverage_matrix = [
         {
-            "supplier": s.display_name,
-            "cells": [coverage_map.get((s.supplier_id, sid), "not_queried") for sid in sources],
+            "supplier": names.get(s.supplier_id, _display_company_name(s.display_name)),
+            "cells": [_query_status_label(coverage_map.get((s.supplier_id, sid), "not_queried")) for sid in sources],
         }
         for s in sups
     ]
@@ -397,7 +586,7 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
 
     cross_tables = []
     if sups:
-        cols = [s.display_name for s in sups]
+        cols = [names.get(s.supplier_id, _display_company_name(s.display_name)) for s in sups]
 
         def table(title: str, getter) -> dict:
             """行=值（共同值标注），列=供应商，命中打勾。"""
@@ -406,12 +595,12 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
                 for v in getter(s.supplier_id):
                     if v == "—":
                         continue  # 占位符（无数据）不得显示为共同值
-                    seen.setdefault(v, []).append(s.display_name)
+                    seen.setdefault(v, []).append(names.get(s.supplier_id, _display_company_name(s.display_name)))
             rows = []
             for idx, (v, owners) in enumerate(sorted(seen.items(), key=lambda kv: (-len(kv[1]), kv[0])), start=1):
                 rows.append({
                     "label": f"{idx}. {v}" + ("（共同）" if len(owners) > 1 else ""),
-                    "cells": ["✔" if s.display_name in owners else "" for s in sups],
+                    "cells": ["✔" if names.get(s.supplier_id, _display_company_name(s.display_name)) in owners else "" for s in sups],
                 })
             return {"title": title, "columns": cols, "rows": rows,
                     "sep": "|---" * (1 + len(cols)) + "|"}
@@ -420,7 +609,7 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
             "title": "统一社会信用代码",
             "columns": cols,
             "rows": [{
-                "label": f"{idx}. {s.display_name}：{s.uscc or '（未提取）'}"
+                "label": f"{idx}. {names.get(s.supplier_id, _display_company_name(s.display_name))}：{s.uscc or '（未提取）'}"
                          + ("" if s.uscc_status == "present_valid" else f"［{s.uscc_status}］"),
                 "cells": ["✔" if c is s else "" for c in sups],
             } for idx, s in enumerate(sups, start=1)],
@@ -472,7 +661,7 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
     dishonesty_sources = []
     for sid, label in SOURCE_LABELS.items():
         status_rows = [
-            {"line": f"{s.display_name}={coverage_map.get((s.supplier_id, sid), 'not_queried')}"}
+            {"line": f"{names.get(s.supplier_id, _display_company_name(s.display_name))}：{_query_status_label(coverage_map.get((s.supplier_id, sid), 'not_queried'))}"}
             for s in sups
         ]
         records = []
@@ -506,10 +695,10 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         gaps.append(f"低置信度字段（如 OCR）{len(low_conf_ids)} 项未参与匹配，需人工核对（见人工复核清单.csv）")
     for c in findings_file.coverage:
         if c.status not in ("match", "no_match_verified"):
-            gaps.append(f"查询覆盖：{names.get(c.supplier_id, c.supplier_id)} × {SOURCE_LABELS.get(c.source_id, c.source_id)} = {c.status}")
+            gaps.append(f"查询覆盖：{names.get(c.supplier_id, c.supplier_id)} × {SOURCE_LABELS.get(c.source_id, c.source_id)}：{_query_status_label(c.status)}")
     for s in sups:
         if s.uscc_status != "present_valid":
-            gaps.append(f"主体确认：{s.display_name} 统一社会信用代码状态为 {s.uscc_status}，相关外部记录暂不归属")
+            gaps.append(f"主体确认：{names.get(s.supplier_id, _display_company_name(s.display_name))} 统一社会信用代码状态为 {s.uscc_status}，相关外部记录暂不归属")
     if cfg.procurement_rules_source in (None, "", "unspecified"):
         gaps.append("采购文件资格/否决条款未提供：失信记录的资格影响只能标注“待采购人确认”")
     if cfg.bid_deadline is None:
@@ -520,8 +709,8 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         {
             "source": SOURCE_LABELS.get(q.source_id, q.source_id),
             "supplier": names.get(q.subject_supplier_id or "", "（未归属）"),
-            "status": q.status,
-            "mode": q.query_mode,
+            "status": _query_status_label(q.status),
+            "mode": {"browser_session": "浏览器会话", "official_api": "官方接口", "public_web": "公开网页", "manual_import": "人工导入", "none": "未执行"}.get(q.query_mode, "未取得"),
             "queried_at": str(q.queried_at) if q.queried_at else None,
             "detail": (q.detail or "")[:120],
         }
@@ -543,7 +732,11 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         "queries": queries_rows,
     }
 
-    deadline_display = "未提供（无法判断处罚/禁入是否处于有效期）" if cfg.bid_deadline is None else str(cfg.bid_deadline)
+    deadline_display = (
+        "未提供（无法判断处罚/禁入是否处于有效期）"
+        if cfg.bid_deadline is None
+        else f"{cfg.bid_deadline.date().isoformat()}（投标截止时间）"
+    )
 
     return {
         "project": cfg,
@@ -552,16 +745,17 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         "project_identity": project_identity,
         "business_rows": business_rows,
         "srm_registration": srm_registration,
+        "srm_registration_matrix": registration_matrix,
         "srm_ownership": ownership_rows_raw,
         "srm_branches": srm_branches,
         "srm_personnel": srm_personnel,
         "srm_duplicate_checks": srm_duplicate_checks,
-        "srm_query_status": {s.display_name: _srm_query_status(s.supplier_id) for s in sups},
+        "srm_query_status": {names.get(s.supplier_id, _display_company_name(s.display_name)): _query_status_label(_srm_query_status(s.supplier_id)) for s in sups},
         "government_screenshots": government_screenshots,
         "summary": {
             "deadline_display": deadline_display,
             "supplier_count": len(sups),
-            "supplier_names": [s.display_name for s in sups],
+            "supplier_names": [names.get(s.supplier_id, _display_company_name(s.display_name)) for s in sups],
             "bid_docs": sum(1 for d in inventory.documents if d.category == "bid"),
             "proc_docs": sum(1 for d in inventory.documents if d.category == "procurement"),
             "ext_dir": sum(1 for d in inventory.documents if d.category == "external_evidence"),
@@ -583,6 +777,17 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         "dishonesty_findings": dishonesty_findings,
         "review_findings": review_findings,
         "review_gaps": gaps,
+        "quote_rows": [
+            {
+                "supplier": names.get(s.supplier_id, _display_company_name(s.display_name)),
+                "total": (f"{quote_by_supplier[s.supplier_id]['total']:.2f}" if quote_by_supplier.get(s.supplier_id, {}).get("total") is not None else "未取得"),
+                "components": "、".join(f"{x['name']} {x['amount']:.2f}" for x in quote_by_supplier.get(s.supplier_id, {}).get("components", [])) or "未取得",
+                "arithmetic_status": quote_by_supplier.get(s.supplier_id, {}).get("arithmetic_status", "未取得报价分析结构化结果"),
+                "anomaly_status": quote_by_supplier.get(s.supplier_id, {}).get("anomaly_status", "未取得报价分析结构化结果"),
+                "evidence_ids": "、".join(quote_by_supplier.get(s.supplier_id, {}).get("evidence_ids", [])) or "—",
+            }
+            for s in sups
+        ],
         "appendix": appendix,
     }
 
@@ -593,8 +798,10 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
 def _render_markdown(ctx: dict, path: Path) -> None:
     from jinja2 import Environment, FileSystemLoader
 
+    # 报告表格依赖模板循环保留换行；不能用 trim_blocks 把表头、分隔线和数据
+    # 拼成一行，否则 Markdown/PDF 会把纵向对照表解析成普通段落。
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_PATH.parent)), autoescape=False,
-                      trim_blocks=True, lstrip_blocks=True)
+                      trim_blocks=False, lstrip_blocks=False)
     tpl = env.get_template(TEMPLATE_PATH.name)
     text = tpl.render(**ctx)
     path.write_text(text, encoding="utf-8")

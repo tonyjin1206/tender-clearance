@@ -1752,6 +1752,11 @@
     "findings": {
       "$ref": "#/$defs/FindingsFile"
     },
+    "bid_analysis": {
+      "additionalProperties": true,
+      "title": "Bid Analysis",
+      "type": "object"
+    },
     "evidence": {
       "$ref": "#/$defs/EvidenceFile"
     }

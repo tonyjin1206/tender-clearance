@@ -83,7 +83,8 @@
             "ownership",
             "judicial",
             "dishonesty",
-            "coverage"
+            "coverage",
+            "extraction"
           ],
           "title": "Domain",
           "type": "string"

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-16T08:39:26.473Z",
+  "sessionId": "claude-import-19fd3687a8e2066cd3637558",
+  "event": "PostToolUse",
+  "toolName": "Write",
+  "file": "/Users/moc/workspace/Tender_Evaluation_Report/tender-clearance-v0.3.1-性能优化审计.md",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 2,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

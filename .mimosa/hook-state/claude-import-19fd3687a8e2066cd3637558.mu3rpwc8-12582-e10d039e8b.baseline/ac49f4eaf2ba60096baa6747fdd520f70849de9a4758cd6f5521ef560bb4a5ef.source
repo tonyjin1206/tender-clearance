@@ -1,0 +1,40 @@
+"""阶段耗时记录与超时边界。"""
+
+from __future__ import annotations
+
+import pytest
+
+from tc import pipeline
+
+
+def test_pipeline_writes_stage_timings(alpha_project):
+    data = __import__("json").loads(
+        (alpha_project / "output/interim/performance.json").read_text(encoding="utf-8")
+    )
+
+    assert data["schema_version"] == "tender-clearance.performance.v1"
+    assert data["status"] == "succeeded"
+    assert data["total_seconds"] >= 0
+    assert [item["stage"] for item in data["stages"]] == [
+        "inventory",
+        "extract_documents",
+        "normalize_and_match",
+        "analyze_bid_data",
+        "import_external_evidence",
+        "assess_risk",
+        "render_report",
+    ]
+    assert all(item["elapsed_seconds"] >= 0 for item in data["stages"])
+
+
+def test_stage_timeout_returns_timing(monkeypatch, tmp_path):
+    (tmp_path / "slow.py").write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
+    monkeypatch.setattr(pipeline, "SCRIPTS", tmp_path)
+
+    with pytest.raises(pipeline.StageExecutionError) as exc_info:
+        pipeline.run_stage("slow.py", [], tmp_path, timeout_seconds=0.01)
+
+    timing = exc_info.value.timing
+    assert timing.stage == "slow"
+    assert timing.status == "timed_out"
+    assert timing.exit_code is None

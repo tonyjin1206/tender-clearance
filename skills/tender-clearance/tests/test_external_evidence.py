@@ -67,6 +67,102 @@ def test_offline_mode_never_touches_network(alpha_project):
         assert live == []
 
 
+def test_import_keeps_live_results_within_same_run(alpha_project):
+    """重跑导入阶段不能清空同一运行已完成的 live 查询。"""
+    import copy
+    import tempfile
+    from pathlib import Path
+    import shutil
+
+    from tc.pipeline import run_stage
+
+    with tempfile.TemporaryDirectory() as td:
+        project = Path(td) / "project"
+        shutil.copytree(alpha_project, project)
+        ext_path = project / "output/interim/external.json"
+        ext = json.loads(ext_path.read_text(encoding="utf-8"))
+        live = copy.deepcopy(ext["queries"][0])
+        live["query_id"] = live["query_id"] + "-live"
+        live["query_mode"] = "public_web"
+        live["status"] = "no_match_verified"
+        live["record_count"] = 0
+        live["evidence_ids"] = []
+        ext["queries"].append(live)
+        ext_path.write_text(json.dumps(ext, ensure_ascii=False), encoding="utf-8")
+
+        run_stage("import_external_evidence.py", [], project)
+        after = json.loads(ext_path.read_text(encoding="utf-8"))
+        assert any(q["query_id"] == live["query_id"] and q["query_mode"] == "public_web"
+                   for q in after["queries"])
+
+
+def test_live_query_reuse_requires_matching_subject_and_adapter():
+    from types import SimpleNamespace
+
+    from query_sources import _is_reusable_query
+    from tc.models import ExternalQuery
+
+    query = ExternalQuery(
+        query_id="Q-live",
+        source_id="government_procurement",
+        subject_supplier_id="S1",
+        subject_key={"name": "虚构测试有限公司", "uscc": "91350100M000100Y43"},
+        query_mode="public_web",
+        status="no_match_verified",
+    )
+    supplier = SimpleNamespace(
+        uscc="91350100M000100Y43",
+        display_name="虚构测试有限公司",
+        declared_name=None,
+    )
+    assert _is_reusable_query(
+        "government_procurement", supplier, query,
+        live_sources={"government_procurement"}, refresh=False, same_run=True,
+    )
+    assert not _is_reusable_query(
+        "government_procurement", SimpleNamespace(
+            uscc="91350100M000100Y44", display_name="虚构测试有限公司", declared_name=None,
+        ), query, live_sources={"government_procurement"}, refresh=False, same_run=True,
+    )
+    assert not _is_reusable_query(
+        "government_procurement", supplier, query,
+        live_sources={"government_procurement"}, refresh=True, same_run=True,
+    )
+    assert not _is_reusable_query(
+        "government_procurement", supplier, query,
+        live_sources={"government_procurement"}, refresh=False, same_run=False,
+    )
+
+
+def test_import_drops_live_results_from_an_older_run(alpha_project):
+    """完整新运行不能把上一运行的 live 查询伪装成本次查询。"""
+    import copy
+    import tempfile
+    from pathlib import Path
+    import shutil
+
+    from tc.pipeline import run_stage
+
+    with tempfile.TemporaryDirectory() as td:
+        project = Path(td) / "project"
+        shutil.copytree(alpha_project, project)
+        ext_path = project / "output/interim/external.json"
+        ext = json.loads(ext_path.read_text(encoding="utf-8"))
+        ext["run"]["run_id"] = "older-run"
+        live = copy.deepcopy(ext["queries"][0])
+        live["query_id"] = live["query_id"] + "-old-live"
+        live["query_mode"] = "public_web"
+        live["status"] = "no_match_verified"
+        live["record_count"] = 0
+        live["evidence_ids"] = []
+        ext["queries"].append(live)
+        ext_path.write_text(json.dumps(ext, ensure_ascii=False), encoding="utf-8")
+
+        run_stage("import_external_evidence.py", [], project)
+        after = json.loads(ext_path.read_text(encoding="utf-8"))
+        assert all(q["query_id"] != live["query_id"] for q in after["queries"])
+
+
 class FakeTransport:
     """测试替身：模拟渠道响应，验证适配器状态机（接收 HttpRequest）。"""
 

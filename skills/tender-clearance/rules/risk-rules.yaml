@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.1.1"
 description: >
   投标清标确定性规则（方案 6.5）。预警级别与证据强度上限在此声明，
   由 assess_risk.py 的确定性逻辑执行；模型不得修改规则输出或等级。
@@ -90,4 +90,14 @@ rules:
     domain: coverage
     level: "III"
     strength_cap: "D"
-    requires_human_review: false
+    # 验收问题 3：查询缺口本身需要人工补齐（查询/授权导入/说明原因），
+    # 存在缺口时报告不得输出“无强制人工复核发现”。
+    requires_human_review: true
+  - id: EXT-001
+    title: 提取异常或数据缺口（扫描页未 OCR、密码保护、低置信度字段未参与匹配）
+    domain: extraction
+    level: "III"
+    strength_cap: "D"
+    # 验收问题 3/5：提取异常与低置信度字段意味着事实可能缺失，
+    # 必须人工核对原文后才能补充或排除。
+    requires_human_review: true

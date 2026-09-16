@@ -13,7 +13,9 @@
 from __future__ import annotations
 import getpass
 import os
+import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +25,8 @@ import typer
 
 from tc.canon import content_hash, load_json, stable_id, write_json
 from tc.models import (
+    Evidence,
+    EvidenceFile,
     EntitiesFile,
     ExternalEvidenceFile,
     ExternalQuery,
@@ -31,6 +35,7 @@ from tc.models import (
     QueryMode,
 )
 from tc.projio import EvidenceBuilder, ProjectError, ensure_output_dirs, load_project_config
+from tc.normalize import normalize_company_name
 from tc.sources import (
     AdapterResult,
     QuerySubject,
@@ -51,8 +56,51 @@ STATUS_PRECEDENCE = {
 }
 
 ALL_SOURCES = ["government_procurement", "srm"]
+LIVE_QUERY_MODES = {
+    "government_procurement": {"official_api", "public_web"},
+    "srm": {"browser_session"},
+}
+REUSABLE_LIVE_STATUSES = {"match", "no_match_verified", "no_result"}
 
 app = typer.Typer(help="执行外部查询并生成查询覆盖记录（合并入 external.json）")
+
+
+def _query_subject_for_supplier(supplier) -> QuerySubject:
+    """从实体构造外部查询主体；优先采用归组确认后的显示名称。"""
+    return QuerySubject(
+        supplier.supplier_id,
+        supplier.display_name or supplier.declared_name,
+        supplier.uscc,
+    )
+
+
+def _is_reusable_query(
+    sid: str,
+    supplier,
+    query: ExternalQuery | None,
+    *,
+    live_sources: set[str],
+    refresh: bool,
+    same_run: bool,
+) -> bool:
+    """判断是否可复用同一运行的成功 live 结果，禁止跨运行借用旧查询。"""
+    if refresh or not same_run or sid not in live_sources or query is None:
+        return False
+    if query.status not in REUSABLE_LIVE_STATUSES:
+        return False
+    if query.query_mode not in LIVE_QUERY_MODES.get(sid, set()):
+        return False
+    key = query.subject_key or {}
+    old_uscc = str(key.get("uscc") or "").strip().upper()
+    new_uscc = str(supplier.uscc or "").strip().upper()
+    if old_uscc and new_uscc and old_uscc != new_uscc:
+        return False
+    old_name = normalize_company_name(str(key.get("name") or ""))
+    new_name = normalize_company_name(str(supplier.display_name or supplier.declared_name or ""))
+    return bool(
+        (old_uscc and new_uscc and old_uscc == new_uscc)
+        or (old_name and old_name == new_name)
+    )
 
 
 @app.command()
@@ -61,6 +109,19 @@ def run(
     config_path: Path = typer.Option(None, help="外部渠道配置文件（默认 rules/external-sources.yaml）"),
     interactive: bool = typer.Option(
         False, "--interactive", help="允许在命令启动时交互输入 SRM 凭据；流水线默认只读环境变量"
+    ),
+    max_total_seconds: int = typer.Option(
+        300,
+        min=0,
+        help="实时外部查询总预算（秒）；0 表示不设预算。预算耗尽后未启动的查询保留 not_queried。",
+    ),
+    supplier_id: list[str] = typer.Option(
+        [], "--supplier-id", help="只刷新指定供应商 ID；可重复传入，用于定向重试失败主体。"
+    ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="强制刷新选定的 live 渠道；默认复用同一主体已成功的本次结果。",
     ),
 ) -> None:
     try:
@@ -72,7 +133,15 @@ def run(
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     _out, interim = ensure_output_dirs(project_dir)
+    same_run = ext.run.run_id == inventory.run.run_id
     builder = EvidenceBuilder(inventory.run, cfg.id_digest_salt, cfg.redaction_mode)
+    prior_query_evidence: list[Evidence] = []
+    if same_run:
+        try:
+            evidence_data = load_json(interim / "evidence-external-queries.json")
+            prior_query_evidence = [Evidence(**item) for item in evidence_data.get("evidence", [])]
+        except (FileNotFoundError, ProjectError, TypeError, ValueError):
+            prior_query_evidence = []
 
     queries: dict[tuple[str, str], ExternalQuery] = {}
     adapter_records: list = []
@@ -80,9 +149,11 @@ def run(
         key = (q.source_id, q.subject_supplier_id or "")
         if key not in queries or STATUS_PRECEDENCE[q.status] > STATUS_PRECEDENCE[queries[key].status]:
             queries[key] = q
+    prior_queries = dict(queries)
 
     source_configs = load_source_config(config_path)
     live_sources = list(cfg.external_query_sources) if cfg.external_query_mode == "live" else []
+    live_source_set = set(live_sources)
 
     runtime_credentials: dict[str, tuple[str, str]] = {}
     if "srm" in live_sources:
@@ -98,16 +169,38 @@ def run(
                                    for sid in live_sources}, runtime_credentials=runtime_credentials)
 
     now = datetime.now(timezone.utc)
+    query_started = time.perf_counter()
+    query_timings: list[dict[str, object]] = []
     new_queries: list[ExternalQuery] = []
-    from tc.normalize import normalize_company_name
-
+    selected_supplier_ids = set(supplier_id) if supplier_id else {s.supplier_id for s in entities.suppliers}
+    refreshed_keys: set[tuple[str, str]] = set()
+    replaced_evidence_ids: set[str] = set()
+    reused_count = 0
     for supplier in entities.suppliers:
-        subject = QuerySubject(supplier.supplier_id, supplier.declared_name, supplier.uscc)
+        if supplier.supplier_id not in selected_supplier_ids:
+            continue
+        # 平铺归组/人工确认后的 display_name 才是参与投标的供应商主体；
+        # declared_name 可能来自商务页中的招标人或模板抬头，不能直接用于 SRM。
+        subject = _query_subject_for_supplier(supplier)
         for sid in ALL_SOURCES:
             key = (sid, supplier.supplier_id)
-            # SRM 作为报告前置门禁必须在本次运行中重新登录并查询；不能用历史导入
-            # 记录代替本次授权查询。其他渠道保留已有结果，避免重复刷新。
-            if key in queries and not (sid == "srm" and sid in live_sources):
+            if key in queries and sid not in live_sources:
+                continue
+            if _is_reusable_query(
+                sid,
+                supplier,
+                queries.get(key),
+                live_sources=live_source_set,
+                refresh=refresh,
+                same_run=same_run,
+            ):
+                reused_count += 1
+                query_timings.append({
+                    "source_id": sid,
+                    "supplier_id": supplier.supplier_id,
+                    "status": "reused",
+                    "elapsed_seconds": 0.0,
+                })
                 continue
             if cfg.external_query_mode != "live" or sid not in live_sources:
                 # 未发起查询：但若存在“主体未归属、名称与该供应商一致”的导入记录，
@@ -127,18 +220,47 @@ def run(
                 else:
                     queries[key] = _placeholder_query(sid, subject, "not_queried",
                                                       f"external_query_mode={cfg.external_query_mode}，未发起查询", now)
-            elif (supplier.confirmation != "confirmed" or not supplier.uscc) and sid != "government_procurement":
+            elif max_total_seconds and time.perf_counter() - query_started >= max_total_seconds:
+                # 预算耗尽表示“本次未启动”，不能抹掉此前已有的 blocked/match
+                # 结果及其记录；只有没有历史结果的主体才新增 not_queried 占位。
+                if key not in prior_queries or not same_run:
+                    queries[key] = _placeholder_query(
+                        sid, subject, "not_queried",
+                        f"本次实时外部查询已达到 {max_total_seconds}s 总预算，未启动此查询", now,
+                    )
+                query_timings.append({
+                    "source_id": sid,
+                    "supplier_id": supplier.supplier_id,
+                    "status": "not_started_budget_exhausted",
+                    "elapsed_seconds": 0.0,
+                })
+            elif (
+                sid != "government_procurement"
+                and supplier.confirmation == "unconfirmed"
+                and not (supplier.uscc or supplier.declared_name)
+            ):
                 queries[key] = _placeholder_query(
                     sid, subject, "needs_manual_review",
-                    "主体未确认（缺少有效统一社会信用代码）；同名结果不能自动归属，需人工查询/导入", now)
+                    "缺少企业名称和统一社会信用代码，无法发起 SRM 查询；需人工确认主体", now)
             else:
+                refreshed_keys.add(key)
+                if key in prior_queries:
+                    replaced_evidence_ids.update(prior_queries[key].evidence_ids)
                 adapter = adapters[sid]
+                one_started = time.perf_counter()
                 result = adapter.query(subject, now)
+                elapsed = round(time.perf_counter() - one_started, 3)
                 q = _adapter_query(sid, subject, result, now, cfg, builder,
                                    version=getattr(adapter, "version", ADAPTER_VERSION_TAG))
                 queries[key] = q
                 adapter_records.extend(_record_from_adapter(q, result, subject, entities, sid))
-                typer.secho(f"  [查询] {supplier.display_name} × {sid}: {result.status}")
+                query_timings.append({
+                    "source_id": sid,
+                    "supplier_id": supplier.supplier_id,
+                    "status": result.status,
+                    "elapsed_seconds": elapsed,
+                })
+                typer.secho(f"  [查询] {supplier.display_name} × {sid}: {result.status}（{elapsed:.2f}s）")
 
     # SRM 浏览器适配器在批量查询期间复用同一会话；所有供应商完成后显式销毁
     # 浏览器上下文，避免 Cookie/页面句柄在宿主进程中继续存活。
@@ -147,7 +269,16 @@ def run(
         if callable(close):
             close()
 
-    all_records = list(ext.records) + adapter_records
+    # live 查询是本次运行对对应渠道的刷新结果：移除旧运行同渠道记录，
+    # 再按 record_id 去重，避免反复重跑把同一 SRM 记录累加成虚假的数量。
+    live_source_ids = set(live_sources)
+    refreshed_records = [
+        r for r in ext.records
+        if (r.source_id, r.supplier_id or "") not in refreshed_keys
+        and not (set(r.evidence_ids) & replaced_evidence_ids)
+    ]
+    record_map = {r.record_id: r for r in [*refreshed_records, *adapter_records]}
+    all_records = list(record_map.values())
     merged = ExternalEvidenceFile(
         run=inventory.run,
         queries=sorted(queries.values(), key=lambda q: (q.source_id, q.subject_supplier_id or "", q.query_id)),
@@ -158,7 +289,9 @@ def run(
     # 外部刷新是独立资料获取任务：保留按渠道/主体/证据内容分层的快照缓存，
     # 后续报告只消费 external.json，不重复访问网络。
     for query in merged.queries:
-        related = [r for r in adapter_records
+        if query.source_id in live_source_ids and query.subject_supplier_id not in selected_supplier_ids:
+            continue
+        related = [r for r in all_records
                    if r.source_id == query.source_id and set(r.evidence_ids) & set(query.evidence_ids)]
         subject_key = content_hash(query.subject_key)[:16]
         cache_file = project_dir / "output/cache/external" / query.source_id / subject_key / f"{query.query_id}.json"
@@ -166,12 +299,27 @@ def run(
             "query": query.model_dump(mode="json"),
             "records": [r.model_dump(mode="json") for r in related],
         })
-    from tc.models import EvidenceFile
-
+    evidence_map = {
+        evidence.evidence_id: evidence
+        for evidence in prior_query_evidence
+        if evidence.evidence_id not in replaced_evidence_ids
+    }
+    evidence_map.update({evidence.evidence_id: evidence for evidence in builder.items})
     write_json(
         interim / "evidence-external-queries.json",
-        EvidenceFile(run=inventory.run, evidence=builder.items).model_dump(mode="json"),
+        EvidenceFile(run=inventory.run, evidence=list(evidence_map.values())).model_dump(mode="json"),
     )
+    write_json(interim / "query-timings.json", {
+        "schema_version": "tender-clearance.query-timings.v1",
+        "total_seconds": round(time.perf_counter() - query_started, 3),
+        "max_total_seconds": max_total_seconds or None,
+        "selected_supplier_ids": sorted(selected_supplier_ids),
+        "partial_refresh": bool(supplier_id),
+        "forced_refresh": refresh,
+        "reused_count": reused_count,
+        "refreshed_keys": len(refreshed_keys),
+        "queries": query_timings,
+    })
     typer.secho(
         f"[OK] 查询覆盖完成：{len(merged.queries)} 条查询记录（模式={cfg.external_query_mode}，"
         f"live 渠道={live_sources or '无'}） → external.json",
@@ -236,13 +384,20 @@ def _adapter_query(sid: str, subject: QuerySubject, result: AdapterResult, now: 
             note=result.detail,
         )
         ev_ids.append(ev.evidence_id)
+    # 查询键必须保留“本次实际请求的主体”。公开渠道页面中的招标人
+    # 不能覆盖供应商查询键；只有 SRM 成功确认画像后才采用 resolved identity。
+    use_resolved_identity = sid == "srm" and result.status == "match"
+    resolved_name = (result.resolved_name if use_resolved_identity else None) or subject.name
+    resolved_uscc = (result.resolved_uscc if use_resolved_identity else None) or subject.uscc
     return ExternalQuery(
         query_id=qid,
         source_id=sid,  # type: ignore[arg-type]
         subject_supplier_id=subject.supplier_id,
-        subject_key={"uscc": subject.uscc, "name": subject.name},
+        subject_key={"uscc": resolved_uscc, "name": resolved_name},
         query_mode=result.request_mode if result.request_mode != "none" else "none",  # type: ignore[arg-type]
-        queried_at=now if result.status not in ("not_queried", "needs_manual_review") else None,
+        # 只要实际发起过登录/查询，就记录时间；needs_manual_review 表示查询已执行
+        # 但主体仍有歧义，不能再伪装成未查询。报告门禁会要求该状态明确列为待人工复核。
+        queried_at=now if result.status != "not_queried" else None,
         status=result.status,  # type: ignore[arg-type]
         record_count=len(result.records),
         evidence_ids=ev_ids,
@@ -253,16 +408,34 @@ def _adapter_query(sid: str, subject: QuerySubject, result: AdapterResult, now: 
 
 def _record_from_adapter(q: ExternalQuery, result: AdapterResult, subject: QuerySubject, entities: EntitiesFile, sid: str):
     from tc.models import ExternalRecord
+    from tc.normalize import normalize_company_name
 
     out = []
+    # 名称查询成功后，SRM 详情页可能返回主体名称/信用代码；即使当前仍是
+    # candidate，也要把记录挂到该供应商，避免报告把完整 SRM 结果显示成“未归属”。
+    # 风险规则仍只对 confirmed 记录作正式主体归属。
+    resolved_name = result.resolved_name or subject.name
+    resolved_uscc = result.resolved_uscc or subject.uscc
+    resolved_confirmation = result.subject_confirmation
+    if resolved_confirmation not in {"confirmed", "candidate", "unconfirmed"}:
+        resolved_confirmation = None
+    def _comparison_name(value: str | None) -> str:
+        value = re.sub(r"\s*[（(]\s*公章\s*[）)]\s*$", "", str(value or ""))
+        return normalize_company_name(value)
+
+    can_attach = bool(subject.supplier_id and (
+        (resolved_uscc and subject.uscc and resolved_uscc.upper() == subject.uscc.upper())
+        or (resolved_name and subject.name
+            and _comparison_name(resolved_name) == _comparison_name(subject.name))
+    ))
     for i, rec in enumerate(result.records):
         out.append(ExternalRecord(
             record_id=stable_id("R", {"q": q.query_id, "index": i, "fields": rec.fields}),
             source_id=sid,  # type: ignore[arg-type]
-            supplier_id=subject.supplier_id if subject.uscc else None,
-            subject_confirmation=rec.subject_confirmation,  # type: ignore[arg-type]
-            subject_name=subject.name,
-            subject_uscc=subject.uscc,
+            supplier_id=subject.supplier_id if can_attach else None,
+            subject_confirmation=(resolved_confirmation or rec.subject_confirmation),  # type: ignore[arg-type]
+            subject_name=resolved_name,
+            subject_uscc=resolved_uscc,
             record_kind=rec.record_kind,  # type: ignore[arg-type]
             fields=rec.fields,
             effective_from=None,
