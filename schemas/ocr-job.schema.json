@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "OCRJob": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {
+          "const": "ocr-job.v1",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "page": {
+          "minimum": 1,
+          "title": "Page",
+          "type": "integer"
+        },
+        "page_image_sha256": {
+          "title": "Page Image Sha256",
+          "type": "string"
+        },
+        "input_ref": {
+          "title": "Input Ref",
+          "type": "string"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "mode": {
+          "default": "accurate",
+          "enum": [
+            "fast",
+            "accurate"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "purpose": {
+          "default": "tender_clearance_field_candidates",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "privacy_requirement": {
+          "default": "local_only",
+          "enum": [
+            "local_only",
+            "user_approved_cloud"
+          ],
+          "title": "Privacy Requirement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_version",
+        "job_id",
+        "document_id",
+        "source_sha256",
+        "page",
+        "page_image_sha256",
+        "input_ref"
+      ],
+      "title": "OCRJob",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "本次运行的唯一标识（uuid），允许跨运行不同",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "运行开始时间（允许跨运行不同）",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "rules_version": {
+          "title": "Rules Version",
+          "type": "string"
+        },
+        "python_version": {
+          "title": "Python Version",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "redaction_mode": {
+          "description": "输出模式：none 表示按项目授权展示原值，standard 表示脱敏",
+          "title": "Redaction Mode",
+          "type": "string"
+        },
+        "id_digest_salt_fingerprint": {
+          "description": "证件摘要盐的指纹（sha256 前 8 位），不保存盐本身",
+          "title": "Id Digest Salt Fingerprint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "started_at",
+        "tool_version",
+        "rules_version",
+        "python_version",
+        "project_id",
+        "redaction_mode",
+        "id_digest_salt_fingerprint"
+      ],
+      "title": "RunInfo",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunInfo"
+    },
+    "jobs": {
+      "items": {
+        "$ref": "#/$defs/OCRJob"
+      },
+      "title": "Jobs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run",
+    "jobs"
+  ],
+  "title": "OCRJobFile",
+  "type": "object"
+}

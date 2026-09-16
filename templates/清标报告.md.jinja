@@ -1,0 +1,247 @@
+<!-- PAGEBREAK -->
+# 投标清标报告
+
+### {{ project.project_name }}
+
+| 项目 | 内容 |
+|---|---|
+| 招标人 | {{ project_identity.tenderer | join('；') or '未取得' }} |
+| 项目名称 | {{ project_identity.project_name | join('；') or project.project_name }} |
+| 项目编号/编码 | {{ project_identity.project_code | join('；') or project.project_id }} |
+| 投标日期/截止时间 | {{ project_identity.bid_date | join('；') or '未取得' }} |
+| 投标人 | {{ summary.supplier_names | join('、') or '未取得' }} |
+
+> 本报告仅整理可回溯的清标证据、报价线索和外部查询结果，不明示或暗示中标候选人；最终评审结论由评标委员会人工复核后作出。本报告是风险线索与证据整理结果。
+
+<!-- PAGEBREAK -->
+# 目录
+
+一、清标工作概况
+
+二、投标文件符合性及实质性响应评审
+
+三、投标报价合理性与异常分析
+
+四、不平衡报价分析
+
+五、清标结论与建议
+
+附录：证据、查询状态与人工复核事项
+
+## 一、清标工作概况
+
+### 1.1 项目与清标范围
+
+| 项目 | 内容 |
+|---|---|
+| 项目名称 | {{ project_identity.project_name | join('；') or project.project_name }} |
+| 项目编号 | {{ project_identity.project_code | join('；') or project.project_id }} |
+| 清标依据 | 招标文件、工程量清单、施工图纸及各投标人的投标文件；采购文件具体资格/否决条款：{% if project.procurement_rules_source == 'unspecified' %}未提供{% else %}{{ project.procurement_rules_source }}{% endif %} |
+| 清标小组 | 未取得，待清标组织补充成员及专业分工 |
+| 投标文件家数 | {{ summary.supplier_count }} 家；文件清单中共 {{ summary.bid_docs }} 份投标文件 |
+| 投标日期/截止时间 | {{ summary.deadline_display }} |
+
+### 1.2 投标人情况
+
+| 投标人 | 富奥 SRM | 中国政府采购网 | 风险发现数 | 待复核事项 |
+|---|---|---|---:|---:|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.srm_status }} | {{ s.gov_status }} | {{ s.i + s.ii + s.iii }} | {{ s.review + s.unfinished }} |
+{% endfor %}
+
+## 二、投标文件符合性及实质性响应评审
+
+### 2.1 标书投标人信息
+
+| 项目 |{% for r in business_rows %} {{ r.supplier }} |{% endfor %}
+|---|{% for r in business_rows %}---|{% endfor %}
+| 公司名称 |{% for r in business_rows %} {{ r.company }} |{% endfor %}
+| 统一社会信用代码 |{% for r in business_rows %} {{ r.uscc }} |{% endfor %}
+| 法定代表人姓名 |{% for r in business_rows %} {{ r.legal_name }} |{% endfor %}
+| 法定代表人身份证号 |{% for r in business_rows %} {{ r.legal_id }} |{% endfor %}
+| 授权代表姓名 |{% for r in business_rows %} {{ r.agent_name }} |{% endfor %}
+| 授权代表身份证号 |{% for r in business_rows %} {{ r.agent_id }} |{% endfor %}
+
+字段来源限定为商务标；技术标和投标一览表仅用于文件盘点、分类及扫描线索分析。SRM 字段只在查询到并完成主体归属时填写。
+
+### 2.2 招标文件实质性响应
+
+| 检查项目 | 检查结果 | 证据/说明 |
+|---|---|---|
+| 关键条款响应 | 未取得招标文件条款映射，待人工复核 | 未提供采购文件资格/否决条款 |
+| 工期响应 | 未取得结构化响应结果 | 待对照商务标和招标文件核验 |
+| 质量标准响应 | 未取得结构化响应结果 | 待对照商务标和招标文件核验 |
+
+### 2.3 投标报价算术性复核
+
+| 投标人 | 总价 | 已识别分项 | 算术复核结论 | 证据 |
+|---|---:|---|---|---|
+{% for r in quote_rows -%}
+| {{ r.supplier }} | {{ r.total }} | {{ r.components }} | {{ r.arithmetic_status }} | {{ r.evidence_ids }} |
+{% endfor %}
+
+## 三、投标报价合理性与异常分析
+
+### 3.1 错漏项、综合单价及措施费用
+
+| 分析项目 | 分析结果 |
+|---|---|
+| 错漏项分析 | 未取得可用于逐项对比的工程量清单结构化数据，不能据此认定存在错漏项。 |
+| 综合单价合理性 | {% for r in quote_rows %}{{ r.supplier }}：{{ r.anomaly_status }}；{% endfor %} |
+| 措施项目费与其他项目费 | 未取得可核验的约束性费用结构化结果，待结合招标控制要求人工复核。 |
+
+### 3.2 工商信息
+
+{% if srm_registration_matrix.rows -%}
+| 统计项目 |{% for c in srm_registration_matrix.columns %} {{ c }} |{% endfor %}
+|---|{% for c in srm_registration_matrix.columns %}---|{% endfor %}
+{% for row in srm_registration_matrix.rows -%}
+| {{ row.label }} |{% for cell in row.cells %} {{ cell }} |{% endfor %}
+{% endfor %}
+{% else -%}
+| 统计项目 | 查询结果 |
+|---|---|
+| 工商信息 | 未取得可列示的 SRM 工商记录；不能据此判断无风险。 |
+{% endif %}
+
+工商信息交叉校验结果：{{ srm_duplicate_checks['工商信息'] }}。
+
+### 3.3 股东、分支机构与主要人员
+
+{% if srm_ownership -%}
+| 投标人 | 股东名称 | 投资金额 | 认缴时间 | 认缴比例 | 出资方式 | 证据 |
+|---|---|---|---|---|---|---|
+{% for r in srm_ownership -%}
+| {{ r.supplier }} | {{ r.shareholder }} | {{ r.amount }} | {{ r.time }} | {{ r.ratio }} | {{ r.method }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor %}
+{% else -%}
+| 项目 | 结果 |
+|---|---|
+| 股东信息 | 未取得 SRM 股东记录；不能据此判断无股东或无重复。 |
+{% endif %}
+
+股东信息交叉校验结果：{{ srm_duplicate_checks['股东信息'] }}。
+
+{% if srm_branches -%}
+| 投标人 | 企业名称 | 成立日期 | 企业状态 | 法人 | 证据 |
+|---|---|---|---|---|---|
+{% for r in srm_branches -%}
+| {{ r.supplier }} | {{ r.fields.get('企业名称','未取得') }} | {{ r.fields.get('成立日期','未取得') }} | {{ r.fields.get('企业状态','未取得') }} | {{ r.fields.get('法人','未取得') }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor %}
+{% else -%}
+| 项目 | 结果 |
+|---|---|
+| 分支机构 | 未取得 SRM 分支机构结构化记录；不能据此判断无分支机构。 |
+{% endif %}
+
+分支机构交叉校验结果：{{ srm_duplicate_checks['分支机构'] }}。
+
+{% if srm_personnel -%}
+| 投标人 | 姓名 | 职位 | 证据 |
+|---|---|---|---|
+{% for r in srm_personnel -%}
+| {{ r.supplier }} | {{ r.fields.get('姓名','未取得') }} | {{ r.fields.get('职位','未取得') }} | {{ r.evidence_ids | join('、') or '—' }} |
+{% endfor %}
+{% else -%}
+| 项目 | 结果 |
+|---|---|
+| 主要人员 | 未取得 SRM 主要人员结构化记录；不能据此判断无主要人员。 |
+{% endif %}
+
+主要人员交叉校验结果：{{ srm_duplicate_checks['主要人员'] }}。
+
+## 四、不平衡报价分析
+
+### 4.1 前后结合分析
+
+| 分析项目 | 结果 |
+|---|---|
+| “前重后轻”等时序性报价 | 未取得足够的分项顺序、工程进度和可比单价数据，不能作出不平衡报价判断。 |
+
+### 4.2 单项重点关注
+
+| 投标人 | 异常分项 | 关注意见 |
+|---|---|---|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | 未取得 | 待取得完整报价清单后复核异常波动 |
+{% endfor %}
+
+## 五、清标结论与建议
+
+### 5.1 清标结论
+
+| 投标人 | I 级（高） | II 级（中） | III 级（低） | 必须人工复核 |
+|---|---:|---:|---:|---:|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.i }} | {{ s.ii }} | {{ s.iii }} | {{ s.review }} |
+{% endfor %}
+
+{% if summary.headline_findings -%}
+重点风险线索仅表示需要核验的事实和证据，不等同于串通投标、违法失信、资格不合格或废标认定。
+
+{% for f in summary.headline_findings -%}
+- {{ f.finding_id }}：{{ f.fact }}；建议：{{ f.recommendation }}
+{% endfor %}
+{% else -%}
+当前未生成 I 级预警；查询未完成、访问受阻或资料缺失的事项仍不得解释为无风险。
+{% endif %}
+
+### 5.2 对评标委员会的建议
+
+1. 对未取得或待人工复核的招标条款、工期、质量标准和报价清单逐项补核。
+2. 对 SRM 已查询到的工商、股东、分支机构和主要人员记录，结合证据编号回看页面原始记录，确认主体归属和记录有效性。
+3. 对报价算术差异、错漏项、综合单价异常和前后不平衡线索进行书面澄清或质询，并由评标委员会依法判断。
+4. 本报告不明示或暗示中标候选人，不替代评标委员会的独立评审。
+
+## 附录：证据、查询状态与人工复核事项
+
+### A. 查询状态
+
+| 投标人 | 富奥 SRM | 中国政府采购网 |
+|---|---|---|
+{% for s in summary.supplier_rows -%}
+| {{ s.name }} | {{ s.srm_status }} | {{ s.gov_status }} |
+{% endfor %}
+
+### B. 政府采购网失信信息
+
+查询入口：<http://219.143.74.201/search/cr/>；查询方式：按投标人名称查询。
+
+{% for src in dishonesty_sources if src.label == '中国政府采购网' -%}
+| 投标人 | 查询状态 |
+|---|---|
+{% for s in src.status_rows -%}
+| {{ s.line.split('：')[0] }} | {{ s.line.split('：', 1)[1] }} |
+{% endfor %}
+{% if src.records -%}
+| 投标人 | 失信信息 | 处理结果 | 依据/文号 | 日期 | 有效期 | 证据 |
+|---|---|---|---|---|---|---|
+{% for r in src.records -%}
+| {{ r.supplier }} | {{ r.behavior }} | {{ r.penalty }} | {{ r.reference }} | {{ r.date }} | {{ r.validity }} | {{ r.evidence_ids | join('、') }} |
+{% endfor %}
+{% else -%}
+| 结果 | 当前没有可列示的政府采购网失信记录；未查询、受阻或失败不等于无失信记录。 |
+|---|---|
+{% endif %}
+{% endfor %}
+
+### C. 人工复核与待补资料
+
+{% if review_findings -%}
+| 编号 | 预警 | 涉及投标人 | 事实 | 建议动作 |
+|---|---|---|---|---|
+{% for f in review_findings -%}
+| {{ f.finding_id }} | {{ f.level_label }} | {{ f.suppliers_label }} | {{ f.fact }} | {{ f.recommendation }} |
+{% endfor %}
+{% endif %}
+{% for item in review_gaps -%}
+- {{ item }}
+{% else -%}
+- 暂无。
+{% endfor %}
+
+所有结论均通过 `证据索引.csv` 的 evidence ID 回溯到标书文件、SRM 页面引用、政府采购网截图或授权导入材料；完整输入文件清单和 SHA-256 见结构化结果及工作底稿。
+
+### 兼容索引
+
+封面信息页、基本信息页、工商信息、股东信息、分支机构、主要人员、政府采购网失信信息及证据截图、PDF、Office 与扫描件文件线索、清标结论与三级预警、证据与人工复核均已按本报告五部分结构归并展示。

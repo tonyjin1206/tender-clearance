@@ -24,3 +24,4 @@ output/
 # Local credentials and environment overrides
 .env
 .env.*
+interim/
