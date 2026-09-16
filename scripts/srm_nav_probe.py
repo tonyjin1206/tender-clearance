@@ -2,7 +2,7 @@
 """SRM 导航结构探测（联调校准用，只读、不输入任何业务数据）。
 
 流程：脚本打开真实浏览器 → 【你手动登录】→ 按终端提示逐步点击页面
-（供应商档案 → 高级查询 → 查询结果 → 企业画像 → 各页签），每步回车后脚本
+（主页“查企业” → 搜索结果 → 企业详情/画像 → 各页签），每步回车后脚本
 把当前页面结构（iframe 列表、可点击文字、表格表头）dump 到 /tmp/srm-nav-dump/。
 
 不记录凭据、Cookie、业务数据内容，只记录导航结构（菜单名/按钮名/表头名）。
@@ -87,15 +87,15 @@ def main() -> None:
         input("① 请在浏览器窗口完成登录（含验证码）。登录进入工作台后回到这里按回车 > ")
         dump(page, "1-after-login")
 
-        input("② 请点击进入『供应商档案』（找不到就直接回车） > ")
+        input("② 请从主页点击进入『查企业』（找不到就直接回车） > ")
         page.wait_for_timeout(2000)
-        dump(page, "2-supplier-entry")
+        dump(page, "2-company-entry")
 
-        input("③ 请进入『高级查询』并点『查询』得到结果列表（找不到就直接回车） > ")
+        input("③ 请在『查企业』搜索框输入企业并点『查询』得到结果列表（找不到就直接回车） > ")
         page.wait_for_timeout(2000)
-        dump(page, "3-search-result")
+        dump(page, "3-company-result")
 
-        input("④ 请打开任一供应商档案，点『更全面企业信息』进入企业画像 > ")
+        input("④ 请打开唯一企业结果进入企业详情/画像 > ")
         page.wait_for_timeout(2000)
         dump(page, "4-profile-basic")
 

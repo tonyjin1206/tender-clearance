@@ -528,6 +528,7 @@ class ReportBundle(_Strict):
     metadata: MetadataFile
     external: ExternalEvidenceFile
     findings: FindingsFile
+    bid_analysis: dict[str, Any] = Field(default_factory=dict)
     evidence: EvidenceFile
 
 

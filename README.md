@@ -5,7 +5,8 @@
 查询或导入，形成**可复核、可追溯、按三级预警展示**的清标报告。
 
 当前业务口径：公共信息仅从封面第一页提取；公司名称、社会信用代码、法人和授权代表
-证件字段仅从商务标提取；技术标和一览表不做主体字段识别，但仍盘点并检查文件属性。
+证件字段仅从商务标提取；技术标和一览表只保留分类、首页可见文本和归组证据，不发起 OCR，正文不做
+主体字段提取。
 报告另设 SRM 工商/股东/分支机构/主要人员章节以及政府采购网截图证据章节。未取得、未查询、
 查询受阻和页面无结构化结果严格分开，任何缺口不得填充为“无风险”。
 
@@ -25,33 +26,56 @@ DOCX、Excel、实时外部查询和 SRM 浏览器适配器分别安装 `.[revie
 `.[live]`、`.[srm]`；生产 OCR 不属于本 Skill 安装包，按 `ocr.capabilities.v1` /
 `ocr-result.v1` 契约由宿主 Agent 提供。Windows 安装见 `INSTALL.md`。
 
+首次安装的长命令可由 `scripts/install_environment.py` 包装执行；它每 10 秒向编排模型
+发出一条 `TC_PROGRESS_V1` 心跳，安装完成或失败时发终态事件。宿主界面应将这类事件作为
+可折叠的模型过程信息展示，不作为普通用户答复。OCR Provider 每完成一页也发出一条同类
+页级事件；事件只含阶段、页号、耗时、块数和状态，不含命令行、凭据或 OCR 原文。
+
+## 上传后的首轮确认
+
+文件一上传，先确认而不是先长时间执行：评标/投标截止时间、是否授权本次中国政府采购网
+公开查询、是否授权 SRM 登录（凭据仅当次运行时提供）以及身份证号/手机号是否明文显示。
+可先输出不读取业务文件的确认清单：
+
+```bash
+$PY scripts/preflight.py $P --intake --profile report
+```
+
+确认后才写入 `project.yaml` 的 `bid_deadline`、`external_query_mode`、
+`external_query_sources` 与 `redaction_mode`；SRM 用户名和密码不得写入项目文件。
+
 ## 快速开始（离线证据导入模式）
 
 ```bash
-P=<你的项目目录>          # 含 project.yaml / bids/ / procurement/ / external-evidence/
+P=<你的项目目录>          # 含 project.yaml / bids/inbox/ / procurement/ / external-evidence/
 PY=.venv/bin/python
 
 $PY scripts/preflight.py       $P --profile report
-$PY scripts/inventory.py             $P
-$PY scripts/extract_documents.py     $P
-$PY scripts/normalize_and_match.py   $P
-$PY scripts/import_external_evidence.py $P
-$PY scripts/query_sources.py             $P   # 报告前必须登录 SRM 并完成查询
-$PY scripts/assess_risk.py           $P
-$PY scripts/render_report.py         $P --profile report
-$PY scripts/validate_project.py      $P --stage final
+$PY scripts/run_pipeline.py    $P --profile report --offline-draft
 ```
 
-`preflight.py` 只读检查文件名分类、技术标跳过策略、当前环境缺失依赖、OCR 和 SRM
+`--offline-draft` 只用于本地/导入证据的预览，不会通过 SRM 正式报告门禁。取得本次 SRM
+授权和凭据后，去掉该参数重跑，才能执行 `validate_project.py $P --stage final`。
+
+`preflight.py` 只读检查文件名分类、平铺上传/归组策略、当前环境缺失依赖、OCR 和 SRM
 授权要求。先把预检 JSON 展示给用户并一次性确认；确认后再统一安装缺失依赖和启动流水线，
-后续阶段不临时提问、不临时安装。技术标正文按文件名短路，属性阶段只读取轻量元数据；
-内容与属性阶段复用同一源文件的解析快照，但会校验文档身份和运行配置，防止同内容副本
-串用证据路径。
+后续阶段不临时提问、不临时安装。技术标正文按文件类型短路，扫描页也不进入 OCR；商务页
+中的证照图片会生成页级 OCR 任务。平铺上传还必须完成 `resolve_supplier_groups.py`；该阶段
+按正文/OCR 证据归组，不信任文件名、目录名或单份报价文件的孤立主体。内容与属性阶段复用
+同一源文件的解析快照，但会校验文档身份和运行配置，防止同内容副本串用证据路径。
+
+`run_pipeline.py` 每阶段输出耗时，并把汇总写到 `output/interim/performance.json`；实时查询
+还会生成 `query-timings.json`。默认实时查询总预算为 300 秒，超过后停止并保留真实的未查询/
+失败状态，不把等待一小时伪装成完成。
 
 宿主 OCR 完成 `output/interim/ocr-jobs.json` 对应任务后，显式执行
 `$PY scripts/import_ocr_results.py $P --input <ocr-results.json>`，再重跑匹配、规则和报告。
+平铺上传还需执行 `$PY scripts/resolve_supplier_groups.py $P`；若状态为
+`needs_manual_review`，先补 OCR 或提供带理由的 `supplier-group-confirmations.json`，再继续。
 正式报告必须先取得用户本次提供的 SRM 用户名和密码，登录后按公司名称 + 统一社会信用代码
 查询；登录成功但没有匹配信息可以生成报告并标记 `no_result`，登录失败、受阻或未查询不能生成。
+个别供应商失败时可用 `query_sources.py $P --supplier-id SUP-2` 定向重试，避免重新查询
+全部供应商；实时记录按 `record_id` 去重。
 
 产出（`$P/output/`）：`清标报告.md` + **`清标报告.pdf`**（宋体排印，每章另起页）、
 `清标结果.json`、`证据索引.csv`、`人工复核清单.csv`；`review` 档位增加 DOCX，
@@ -66,7 +90,7 @@ $PY scripts/validate_project.py      $P --stage final
 | P2 报告与审阅 | ✅ | Markdown/PDF/DOCX、证据索引、复核清单、脱敏检查（含 PDF 文本层） |
 | P3 外部证据导入 | ✅ | JSON/CSV/快照导入、查询状态、覆盖矩阵 |
 | P4 合法外部查询适配器 | ✅ 政采网已实测启用 | 渠道范围（2026-09-09 决策）：外部仅保留中国政府采购网（公开查询表单自动化），信用中国/军采/工商/司法已移除；适配器 + 可注入传输层，状态机全覆盖 |
-| P5 富奥 SRM 接入 | ✅ 端到端实测通过（无头后台） | 登录→高级查询唯一命中→画像→身份核对→三类页面结构化提取；凭据仅运行时内存；默认无头（用户只对话），`SRM_BROWSER_HEADED=1` 为验证码人工接管；驱动 `scripts/tc/srm_playwright_driver.py`，自测 `scripts/srm_browser_selftest.py` |
+| P5 富奥 SRM 接入 | ✅ 查询入口已改造，待真实页面复核 | 登录→主页“查企业”→搜索框唯一命中→企业详情/画像→身份核对→三类页面结构化提取；凭据仅运行时内存；默认无头（用户只对话），`SRM_BROWSER_HEADED=1` 为验证码人工接管；驱动 `scripts/tc/srm_playwright_driver.py`，自测 `scripts/srm_browser_selftest.py` |
 
 渠道范围（2026-09-09 决策）：外部仅保留**中国政府采购网**（失信名单查询已自动化，
 不需要账号密码），内部仅保留**富奥 SRM**；其余渠道已移除
@@ -91,8 +115,8 @@ python <quick_validate.py> .
 
 ## 待确认事项（方案 §11）
 
-1. ~~富奥 SRM 实时查询~~ —— ✅ 已端到端实测（无头后台：登录→高级查询唯一命中→
-   画像→三类页面结构化提取；用户只对话，凭据仅内存）；
+1. 富奥 SRM 实时查询 —— 查询入口已改为无头后台登录→主页“查企业”→搜索框唯一命中→
+   企业详情/画像→三类页面结构化提取；本次代码改造后需在真实登录会话中复核页面选择器；
 2. ~~公开渠道在部署环境的可用查询方式~~ —— 2026-09-09 决策：外部仅保留中国政府采购网，
    内部仅保留富奥 SRM；信用中国/军采/工商/司法渠道已移除；
 3. 本项目采购文件的资格/否决条款映射与时间截点 —— 已提供草案工具：
@@ -100,10 +124,11 @@ python <quick_validate.py> .
 4. 图像相似度、电子签章等进阶能力（须另行定义误报率后加入）；
 5. ~~是否需要 Excel 工作底稿~~ —— 已提供 `scripts/render_worksheet.py`（9 张工作表：
    说明/供应商对照/比对矩阵/风险发现/查询覆盖/外部记录/证据索引/文件清单/人工复核）。
-6. OCR 生产服务不嵌入 Core。推荐宿主 Provider Profile 为 PaddleOCR
-   `PP-OCRv4_mobile_det` + `PP-OCRv4_mobile_rec` / ONNX Runtime CPU；宿主先声明
-   `ocr.capabilities.v1`，再将 `ocr-result.v1` 结果交给 `import_ocr_results.py`。
-   无 Provider 时扫描页保持 `ocr_unavailable` 并进入人工复核。
+6. OCR 生产服务不嵌入 Core。质量优先时，推荐宿主 Provider Profile 使用 PaddleOCR
+   `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`，关闭规整 A4 页面不需要的方向/展平
+   预处理，并返回文本块坐标；宿主先声明 `ocr.capabilities.v1`，再将 `ocr-result.v1`
+   结果交给 `import_ocr_results.py`。`mobile` 模型只能作为经过真实样本验收的快速档，
+   不得仅因速度直接替换质量档。无 Provider 时扫描页保持 `ocr_unavailable` 并进入人工复核。
 
 7. 报告身份证号展示由 `project.yaml` 的 `redaction_mode` 控制；当前业务授权使用
    `none` 时，法人代表和授权代表身份证号直接展示完整号码。SRM 密码、Cookie、令牌始终不输出。

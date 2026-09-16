@@ -60,6 +60,12 @@ class AdapterResult:
     request_mode: str = "none"  # official_api / public_web / none
     response_ref: str | None = None  # 原始响应/快照引用说明
     parsed_count: int = 0
+    # 浏览器查询可能先按名称命中，再从详情页取得统一社会信用代码。
+    # 这些字段用于把候选结果完整展示到对应供应商下；是否可作确认结论仍由
+    # subject_confirmation 控制。
+    resolved_name: str | None = None
+    resolved_uscc: str | None = None
+    subject_confirmation: str | None = None
 
 
 @dataclass
@@ -388,17 +394,23 @@ class SrmAdapter:
             from .srm import SrmClient, SrmCredentials, load_srm_config
             import os
 
-            # SRM_BROWSER_DRIVER=playwright 时启用真实浏览器会话模式：
-            # 默认无头后台运行（用户目标：只对话、不弹窗）；SRM_BROWSER_HEADED=1
-            # 为可选有头模式（人工接管验证码场景）
-            if os.environ.get("SRM_BROWSER_DRIVER", "") == "playwright":
-                from .srm_playwright_driver import ensure_registered
+            # SRM 默认走真实浏览器会话，固定从主页“查企业”读取可见信息；
+            # 仅显式设置 SRM_BROWSER_DRIVER=api/http 才回退到旧 HTTP/token 通道。
+            # 默认无头后台运行；SRM_BROWSER_HEADED=1 为人工接管验证码的可选模式。
+            if os.environ.get("SRM_BROWSER_DRIVER", "playwright").lower() == "playwright":
+                # 宿主已经注入的驱动（桌面浏览器桥接、测试替身等）优先；
+                # 只有没有注册驱动时才自动装配本地 Playwright，避免覆盖注入状态。
+                if _srm_browser.get_browser_driver_factory() is None:
+                    from .srm_playwright_driver import ensure_registered
 
-                ensure_registered(headless=os.environ.get("SRM_BROWSER_HEADED", "") != "1")
+                    ensure_registered(headless=os.environ.get("SRM_BROWSER_HEADED", "") != "1")
 
             factory = _srm_browser.get_browser_driver_factory()
             if factory is not None:
-                # keep_session：一次登录批量查询本项目全部供应商，降低触发风控概率
+                # 该门户在同一浏览器会话切换企业后可能残留旧画像 iframe，导致
+                # 第二家/第三家无法确认主体。正式默认每家供应商隔离会话；只有
+                # 明确设置 SRM_BROWSER_REUSE_SESSION=1 才复用会话做性能实验。
+                reuse_session = os.environ.get("SRM_BROWSER_REUSE_SESSION", "") == "1"
                 self._client = _srm_browser.SrmBrowserClient(
                     driver_factory=factory,
                     credential_provider=(
@@ -408,7 +420,7 @@ class SrmAdapter:
                             password=(self._runtime_credentials or ("", os.environ.get("SRM_PASSWORD", "")))[1],
                         ))
                     ),
-                    keep_session=True,
+                    keep_session=reuse_session,
                 )
             else:
                 cfg = load_srm_config()

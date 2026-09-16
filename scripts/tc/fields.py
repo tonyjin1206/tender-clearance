@@ -78,15 +78,15 @@ _LABEL_FIELD: list[tuple[str, str]] = [
     (r"项目编号|项目编码|采购项目编号", "project_code"),
     (r"投标日期|投标时间|递交日期|递交时间", "bid_date"),
     (r"统一社会信用代码|统一社会代码|信用代码", "uscc"),
-    (r"法定代表人(?:/负责人)?|法律代表人", "legal_rep_name"),
+    (r"法定代表人(?:/负责人)?|法人代表|法律代表人", "legal_rep_name"),
     (r"授权代表|委托代理人|被授权人|授权委托人|投标代表|经办人", "bid_agent_name"),
     (r"股东|出资人|投资人", "shareholder_name"),
     (r"联系人", "contact_name"),
     (r"(?:联系|办公|注册|通讯)?地址|住所", "address"),
     (r"联系电话|联系方式|电话|手机号?|移动电话|传真", "phone"),
     (r"电子邮箱|邮箱|电子邮件|Email|E-mail", "email"),
-    (r"身份证号|身份证号码|证件号码|证件号", "id_number"),
-    (r"供应商名称|投标人名称|公司名称|单位名称|供应商全称|投标单位", "company_name"),
+    (r"身份证号|身份证号码|公民身份号码|证件号码|证件号", "id_number"),
+    (r"供应商名称|投标人名称|投标人|公司名称|单位名称|供应商全称|投标单位", "company_name"),
 ]
 
 _LABEL_RES = [(re.compile(r"^\s*(?:【?\d*[】.]?\s*)?" + pat + r"\s*[:：]?\s*$"), fld) for pat, fld in _LABEL_FIELD]
@@ -120,13 +120,16 @@ _NAME_STOPWORDS = {
 _NAME_FALSE_POSITIVE_PARTS = {
     "身份证", "证件", "邮政", "编码", "负责", "代表", "委托", "授权", "证明",
     "审核", "审查", "实施", "方案", "项目", "工程", "汇报", "编制", "签字",
-    "签章", "盖章", "职称", "终审", "进度", "鉴别", "报告", "执行",
+    "签章", "盖章", "职称", "终审", "进度", "鉴别", "报告", "执行", "中华人民共和国",
+    "居民身份证", "有限公司", "股份",
 }
 
 
 def _clean_name(value: str) -> str:
     """去掉姓名值尾部的括号注记（如“李四（身份证：…）”）并校验形状。"""
-    t = re.split(r"[（(]", value)[0].strip().strip("：:，, ")
+    # 授权书正文常把“法人代表张三授权李四为全权代表”识别成一整段，
+    # 先在动作词处截断，避免把两个人名和正文拼成一个伪姓名。
+    t = re.split(r"[（(]|授权|为全权|为代表|为|参加|，|,|；|;", value)[0].strip().strip("：:，, ")
     return t
 
 
@@ -227,7 +230,48 @@ def scan_ocr_blocks(
             hit.context = (hit.context + "；" if hit.context else "") + "OCR page_only 降级候选"
         return hits
 
+    # Vision 等 Provider 常把“投标人：公司名”作为一个完整文本块返回，
+    # 此时没有可供空间配对的独立值块。先保留内联标签候选，再叠加下方的
+    # 标签/值空间配对；后续归组会以商务标主体证据过滤招标人名称。
+    inline_hits = scan_inline("\n".join(str(b.get("text", "")) for b in clean))
+    for hit in inline_hits:
+        hit.confidence = min(hit.confidence, 0.85)
+        block_conf = [float(b.get("confidence", 0.0)) for b in clean if hit.value in str(b.get("text", ""))]
+        if block_conf:
+            hit.confidence = min(hit.confidence, max(block_conf))
+        hit.context = (hit.context + "；" if hit.context else "") + "OCR inline block fallback"
+
     labels: list[tuple[int, str, str]] = []
+    full_text = "\n".join(str(b.get("text", "")) for b in clean)
+    authorization_page = bool(re.search(r"法人代表.{0,100}授权|授权.{0,100}法人代表", full_text))
+
+    # 授权书通常把法人身份证放在左侧、授权代表身份证放在右侧。
+    # 先按可见坐标建立角色映射，再处理“公民身份号码”这种通用标签，
+    # 避免把两张身份证都挂到同一个 id_number 字段下。
+    id_role_by_value: dict[str, str] = {}
+    if authorization_page:
+        id_blocks: list[tuple[float, float, str]] = []
+        for block in clean:
+            block_text = str(block.get("text", ""))
+            box = block.get("bbox") or {}
+            x = float(box.get("x", 0.5)) + float(box.get("width", 0)) / 2
+            y = float(box.get("y", 0.5)) + float(box.get("height", 0)) / 2
+            for match in _ID18_RE.finditer(block_text):
+                id_blocks.append((x, y, match.group(0)))
+        unique_positions = {}
+        for x, y, value in id_blocks:
+            unique_positions.setdefault(value, []).append((x, y))
+        id_positions = [
+            (value, sum(x for x, _ in points) / len(points), sum(y for _, y in points) / len(points))
+            for value, points in unique_positions.items()
+        ]
+        if len(id_positions) >= 2:
+            # 横向并排证件按 x；上下排列证件按 y。两种都是授权书常见版式。
+            spread_x = max(item[1] for item in id_positions) - min(item[1] for item in id_positions)
+            axis = 1 if spread_x >= 0.12 else 2
+            ordered = sorted(id_positions, key=lambda item: item[axis])
+            id_role_by_value[ordered[0][0]] = "legal_rep_id"
+            id_role_by_value[ordered[-1][0]] = "bid_agent_id"
     for idx, block in enumerate(clean):
         text = str(block.get("text", "")).strip()
         for pat, field in _LABEL_FIELD:
@@ -273,10 +317,11 @@ def scan_ocr_blocks(
             selected = _coerce_label_value(field, value)
         if selected is None:
             continue
+        if selected.field == "id_number" and selected.value in id_role_by_value:
+            selected.field = id_role_by_value[selected.value]
         conf = min(
             float(label.get("confidence", page_conf)),
             float(value_block.get("confidence", page_conf)),
-            page_conf or 0.0,
         )
         key = (selected.field, selected.value)
         if key in used:
@@ -285,6 +330,16 @@ def scan_ocr_blocks(
         selected.confidence = conf
         selected.context = f"OCR 空间配对：{label_text[:30]} → {value[:60]}"
         hits.append(selected)
+    seen = {(hit.field, hit.value) for hit in hits}
+    spatial_name_fields = {hit.field for hit in hits if hit.field in {"legal_rep_name", "bid_agent_name"}}
+    for hit in inline_hits:
+        if hit.field == "id_number" and hit.value in id_role_by_value:
+            hit.field = id_role_by_value[hit.value]
+        if hit.field in {"legal_rep_name", "bid_agent_name"} and hit.field in spatial_name_fields:
+            continue
+        if (hit.field, hit.value) not in seen:
+            hits.append(hit)
+            seen.add((hit.field, hit.value))
     return hits
 
 
@@ -312,8 +367,8 @@ def _id_context(text: str, pos: int) -> str:
     return ""
 
 
-_NAME_LABELS = {"legal_rep_name": re.compile(r"(法定代表人|负责人)\s*[:：]?\s*([一-龥·]{2,12})"),
-                "bid_agent_name": re.compile(r"(授权代表|委托代理人|被授权人|授权委托人|投标代表|经办人)\s*[:：]?\s*([一-龥·]{2,12})"),
+_NAME_LABELS = {"legal_rep_name": re.compile(r"(法定代表人|法人代表|负责人)\s*[:：]?\s*([一-龥·]{2,12})"),
+                "bid_agent_name": re.compile(r"(授权代表|委托代理人|被授权人|授权委托人|投标代表|经办人|授权(?!人|书|委托))\s*[:：]?\s*([一-龥·]{2,12})"),
                 "shareholder_name": re.compile(r"(股东|出资人|投资人)\s*[:：]?\s*([一-龥·A-Za-z0-9（）()]{2,30})"),
                 "contact_name": re.compile(r"(联系人)\s*[:：]?\s*([一-龥·]{2,12})")}
 
@@ -323,10 +378,10 @@ def _name_after_label(text: str, seen_values: set) -> list[FieldHit]:
     occupied: list[tuple[int, int]] = []
     for fld, rx in _NAME_LABELS.items():
         for m in rx.finditer(text):
-            name = m.group(2).strip()
+            name = _clean_name(m.group(2))
             if not _plausible_name(name):
                 continue
-            span = m.span(2)
+            span = (m.start(2), m.start(2) + len(name))
             if any(not (span[1] <= s or span[0] >= e) for s, e in occupied):
                 continue
             if (fld, name) in seen_values:

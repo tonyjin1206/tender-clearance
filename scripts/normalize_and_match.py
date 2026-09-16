@@ -74,13 +74,27 @@ def run(
         raise typer.Exit(code=2)
     _out, interim = ensure_output_dirs(project_dir)
 
-    supplier_dirs = inventory.supplier_dirs
+    grouping_path = project_dir / "output/interim/supplier-grouping.json"
+    grouping = load_json(grouping_path) if grouping_path.exists() else None
+    if grouping and grouping.get("status") == "resolved":
+        supplier_dirs = [g["group_id"] for g in grouping.get("groups", [])]
+        supplier_labels = {g["group_id"]: g["supplier_name"] for g in grouping.get("groups", [])}
+        document_groups = {
+            d["document_id"]: d["group_id"]
+            for d in grouping.get("documents", [])
+            if d.get("status") == "assigned" and d.get("group_id")
+        }
+    else:
+        # 兼容已经人工整理好的旧项目；新上传项目必须先通过归组阶段。
+        supplier_dirs = inventory.supplier_dirs
+        supplier_labels = {d: cfg.supplier_directory_mapping.get(d, d) for d in supplier_dirs}
+        document_groups = {}
     suppliers: dict[str, Supplier] = {}
     for i, d in enumerate(supplier_dirs, start=1):
         suppliers[d] = Supplier(
             supplier_id=f"SUP-{i}",
             directory_name=d,
-            display_name=cfg.supplier_directory_mapping.get(d, d),
+            display_name=supplier_labels.get(d, cfg.supplier_directory_mapping.get(d, d)),
         )
 
     parties: list[Party] = []
@@ -94,15 +108,21 @@ def run(
         if fr.low_confidence:
             low_conf_fields.append(fr)
             continue
-        if not fr.supplier_dir or fr.supplier_dir not in supplier_fields:
+        group_dir = document_groups.get(fr.document_id, fr.supplier_dir)
+        if not group_dir or group_dir not in supplier_fields:
             continue
-        supplier_fields[fr.supplier_dir].setdefault(fr.field, []).append(fr)
+        supplier_fields[group_dir].setdefault(fr.field, []).append(fr)
 
     for d, supplier in suppliers.items():
         sf = supplier_fields[d]
-        # 声明名称：优先 supplier_name/company_name 标签命中，其次公司名频次
+        # 平铺上传完成归组后，grouping.json 是供应商身份的上游确认；
+        # 不能再让商务页中重复出现的招标人名称覆盖 declared_name。
         company_hits = sf.get("company_name", [])
-        declared = _most_common([h.normalized or h.value_masked for h in company_hits if h.normalized])
+        if grouping and grouping.get("status") == "resolved":
+            declared = supplier.display_name
+        else:
+            # 兼容旧版人工整理项目：优先 company_name 标签命中，其次公司名频次。
+            declared = _most_common([h.normalized or h.value_masked for h in company_hits if h.normalized])
         supplier.declared_name = declared
         supplier.normalized_name = normalize_company_name(declared) if declared else None
         supplier.name_search_key = company_search_key(declared) if declared else None

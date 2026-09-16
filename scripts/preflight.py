@@ -40,6 +40,59 @@ OPTIONAL_MODULES = {
 }
 
 
+# 这个清单刻意不包含用户的实际密码。宿主在文件上传后应立即显示它，
+# 只把用户选择写入 project.yaml；SRM 凭据仅在随后启动流水线时以运行时环境注入。
+UPFRONT_QUESTIONS = [
+    {
+        "id": "bid_deadline",
+        "prompt": "请确认评标/投标截止时间（ISO 8601，例如 2026-09-15T09:00:00+08:00）；它是处罚或禁入有效期判断的唯一时间基准。",
+        "required": True,
+        "project_yaml_key": "bid_deadline",
+    },
+    {
+        "id": "public_web_authorization",
+        "prompt": "是否授权本次访问中国政府采购网公开查询？不授权则仅使用本地文件和已导入证据。",
+        "required": True,
+        "project_yaml_effect": {
+            "authorized": {"external_query_mode": "live", "append_source": "government_procurement"},
+            "not_authorized": {"external_query_mode": "offline", "external_query_sources": []},
+        },
+    },
+    {
+        "id": "srm_credentials",
+        "prompt": "是否授权本次 SRM 登录查询？如授权，请仅通过当前会话的安全输入或 SRM_USER/SRM_PASSWORD 运行时环境提供账号和密码；绝不写入 project.yaml、日志或报告。不授权时只能生成离线草稿，不能通过正式报告门禁。",
+        "required": True,
+        "runtime_only": True,
+        "project_yaml_effect": {"authorized": {"external_query_mode": "live", "append_source": "srm"}},
+    },
+    {
+        "id": "sensitive_display",
+        "prompt": "报告中的身份证号、手机号是否按本次授权明文显示？选择“否”时统一脱敏。",
+        "required": True,
+        "project_yaml_key": "redaction_mode",
+        "choices": {"show_full": "none", "mask": "standard"},
+    },
+]
+
+
+def build_intake_plan(profile: str) -> dict:
+    """返回上传文件后的首轮确认项；不读取或解析业务文件。"""
+    if profile not in {"report", "review", "workpaper"}:
+        raise ProjectError(f"不支持的输出档位：{profile}")
+    return {
+        "schema_version": "tender-clearance.intake.v1",
+        "status": "awaiting_user_input",
+        "profile": profile,
+        "questions": UPFRONT_QUESTIONS,
+        "before_answers": [
+            "do_not_install_dependencies",
+            "do_not_parse_or_extract_uploaded_documents",
+            "do_not_access_public_or_internal_network_sources",
+        ],
+        "credential_handling": "SRM 凭据仅可作为当前进程的运行时输入，不能持久化。",
+    }
+
+
 def _classify_filename(name: str) -> str:
     value = name.lower()
     if value.endswith(('.xlsx', '.xls')) or '一览' in name or '报价' in name:
@@ -146,9 +199,10 @@ def build_plan(project_dir: Path, profile: str) -> dict:
 def run(
     project_dir: Path = typer.Argument(..., exists=True, file_okay=False, help="项目目录"),
     profile: str = typer.Option("report", help="输出档位：report / review / workpaper"),
+    intake: bool = typer.Option(False, "--intake", help="上传后首轮确认；不读取 project.yaml 或业务文件"),
 ) -> None:
     try:
-        plan = build_plan(project_dir, profile)
+        plan = build_intake_plan(profile) if intake else build_plan(project_dir, profile)
     except ProjectError as exc:
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)

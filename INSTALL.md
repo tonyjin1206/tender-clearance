@@ -10,6 +10,13 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-core.txt
 ```
 
+首次安装时，如由本 Skill 包装安装命令，请使用以下形式；过程事件写入 stderr，供宿主 Agent
+显示为可折叠模型信息，每 10 秒一条，不作为普通用户答复：
+
+```powershell
+py scripts\install_environment.py -- py -3.12 -m pip install -r requirements-core.txt
+```
+
 ## 按需扩展
 
 ```powershell
@@ -20,7 +27,9 @@ py -3.12 -m venv .venv
 ```
 
 生产 OCR 不通过本包安装。宿主 Agent 需声明并提供 `ocr.capabilities.v1`，然后把
-`ocr-result.v1` 结果交给 `scripts/import_ocr_results.py`；默认要求本地处理。
+`ocr-result.v1` 结果交给 `scripts/import_ocr_results.py`；默认要求本地处理。质量优先
+的参考实现使用 PaddleOCR `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`，并返回块坐标；
+如果客户已有本地 Agent OCR，可复用其能力，但必须经过能力声明和真实扫描页验收。
 
 ## 安装检查
 

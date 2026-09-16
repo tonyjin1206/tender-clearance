@@ -101,16 +101,58 @@ def build_content(project_dir: Path) -> ContentFile:
             continue  # 外部证据由 import_external_evidence.py 处理
         if doc.extraction_status in ("empty", "password_protected", "corrupt", "unsupported", "skipped"):
             continue  # 清单中已记录原因
-        if doc.category == "bid" and doc.bid_subtype == "technical":
-            # 技术标通常占项目体量绝大部分；其正文不参与本版主体/公共字段识别，
-            # 文件名已判定为 technical 时直接跳过正文读取、图片枚举和 OCR 任务。
-            doc_contents.append(DocumentContent(
-                document_id=doc.document_id,
-                relative_path=doc.relative_path,
-                supplier_dir=doc.supplier_dir,
-                status="skipped",
-                issues=["文件名识别为技术标，按性能策略跳过正文扫描；仅保留盘点结果"],
-            ))
+        if doc.category == "bid" and doc.bid_subtype in {"technical", "bid_schedule", "unknown"}:
+            # 供应商归组必须先看每份文件的首页，不能因为“技术标/一览表”而
+            # 跳过主体识别。这里只读取首页；正文、媒体和大批量 OCR 仍跳过。
+            path = project_dir / doc.relative_path
+            try:
+                cache_key = document_cache_key(doc, cfg, "content-cover")
+                cached = _load_document_cache(project_dir, doc.sha256, cache_key)
+                if cached:
+                    dc = DocumentContent(**cached["content"])
+                    fr = [FieldRecord(**x) for x in cached.get("fields", [])]
+                    an = [ExtractionAnomaly(**x) for x in cached.get("anomalies", [])]
+                    parsed_document = parsers.deserialize_parsed(cached.get("parsed"))
+                    for evidence in cached.get("evidence", []):
+                        builder.extend([Evidence(**evidence)])
+                    jobs.extend(OCRJob(**x) for x in cached.get("ocr_jobs", []))
+                else:
+                    parsed_document = parsers.deserialize_parsed(_load_document_parsed(project_dir, doc.sha256))
+                    if doc.media_type == "application/pdf":
+                        dc, fr, an, new_jobs, mock_results, parsed_document = _extract_pdf(
+                            path, doc, cfg, builder, project_dir, parsed=parsed_document,
+                            max_pages=1, identity_only=True, allow_ocr=False,
+                        )
+                    else:
+                        dc = DocumentContent(
+                            document_id=doc.document_id,
+                            relative_path=doc.relative_path,
+                            supplier_dir=doc.supplier_dir,
+                            status="skipped",
+                            issues=["跳过正文扫描：技术标/一览表非 PDF 文件暂不读取正文，仅保留清单证据"],
+                        )
+                        fr, an, new_jobs, mock_results = [], [], [], []
+                    jobs.extend(new_jobs)
+                    generated_results.extend(mock_results)
+                if doc.bid_subtype == "technical":
+                    dc.issues.append("跳过正文扫描：技术标仅解析首页以确认供应商；正文、表格和媒体不进入主体提取")
+                elif doc.bid_subtype == "bid_schedule":
+                    dc.issues.append("投标一览表仅解析首页以确认供应商和报价文件归属")
+                else:
+                    dc.issues.append("文件类型待确认，仅解析首页并等待归组")
+                if not cached:
+                    _write_document_cache(
+                        project_dir, doc.sha256, dc, fr, an, builder,
+                        jobs_for_doc(jobs, doc.document_id), parsed_document, cache_key=cache_key,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                dc = DocumentContent(document_id=doc.document_id, relative_path=doc.relative_path,
+                                     supplier_dir=doc.supplier_dir, status="failed", issues=[f"首页提取失败：{exc}"])
+                fr, an = [], [ExtractionAnomaly(document_id=doc.document_id, relative_path=doc.relative_path,
+                                                anomaly="cover_extraction_failed", detail=str(exc)[:300])]
+            doc_contents.append(dc)
+            fields.extend(fr)
+            anomalies.extend(an)
             continue
         path = project_dir / doc.relative_path
         try:
@@ -166,7 +208,12 @@ def build_content(project_dir: Path) -> ContentFile:
         anomalies.extend(an)
 
     # 只消费已经验证并落盘的 OCR 结果；结果状态为失败/阻断时也要显式保留缺口。
-    for result in [*imported_ocr, *generated_results]:
+    valid_job_ids = {j.job_id for j in jobs}
+    # OCR 任务策略会随版本收紧（例如技术标不再 OCR）；旧的结果缓存可能仍
+    # 引用已撤销任务。它们不能制造“结果无对应任务”的假异常，也不能重新把
+    # 非商务扫描页带回主体提取。
+    active_results = [r for r in [*imported_ocr, *generated_results] if r.job_id in valid_job_ids]
+    for result in active_results:
         job = next((j for j in jobs if j.job_id == result.job_id), None)
         if job is None:
             anomalies.append(ExtractionAnomaly(anomaly="ocr_result_invalid", detail=f"结果 {result.job_id} 无对应任务"))
@@ -188,7 +235,7 @@ def build_content(project_dir: Path) -> ContentFile:
         fields.extend(_scan_ocr_result(result, builder, doc, dc))
 
     # 未有结果的扫描页继续保留 ocr_unavailable；已有成功结果的页不重复报缺口。
-    result_pages = {(r.document_id, r.page) for r in [*imported_ocr, *generated_results]}
+    result_pages = {(r.document_id, r.page) for r in active_results}
     for dc in doc_contents:
         doc = next((d for d in inventory.documents if d.document_id == dc.document_id), None)
         if not doc:
@@ -210,7 +257,7 @@ def build_content(project_dir: Path) -> ContentFile:
     ev = {"run": inventory.run.model_dump(mode="json"), "evidence": [e.model_dump(mode="json") for e in builder.items]}
     write_json(interim / "evidence-content.json", ev)
     write_json(interim / "ocr-jobs.json", OCRJobFile(run=inventory.run, jobs=sorted({j.job_id: j for j in jobs}.values(), key=lambda j: j.job_id)).model_dump(mode="json"))
-    existing = {r.job_id: r for r in imported_ocr}
+    existing = {r.job_id: r for r in imported_ocr if r.job_id in valid_job_ids}
     existing.update({r.job_id: r for r in generated_results})
     write_json(interim / "ocr-results.json", OCRResultFile(
         run=inventory.run, results=sorted(existing.values(), key=lambda r: r.job_id)
@@ -351,9 +398,15 @@ def _scan_ocr_result(result: OCRResult, builder: EvidenceBuilder, doc, dc: Docum
             "processing_location": result.provider.processing_location,
             "location_precision": result.location_precision,
             "cover": result.page == 1 and _looks_like_cover("\n".join(b["text"] for b in blocks)),
+            "via_label": bool(hit.via_label),
         }
+        # 有 block 坐标时以标签和值自身置信度为准；页面平均置信度会被印章、
+        # 背景和身份证照片拖低，不能把清晰的单字段一起降成低置信度。
+        ocr_confidence = hit.confidence if result.location_precision == "block" else min(
+            hit.confidence, result.average_confidence or 0.0
+        )
         out.append(_build_field_record(
-            hit, builder, doc, location, method="ocr_host", confidence=min(hit.confidence, result.average_confidence or 0.0)
+            hit, builder, doc, location, method="ocr_host", confidence=ocr_confidence
         ))
     return out
 
@@ -380,6 +433,9 @@ def _extract_pdf(
     project_dir: Path,
     *,
     parsed: ParsedPdf | None = None,
+    max_pages: int | None = None,
+    identity_only: bool = False,
+    allow_ocr: bool = True,
 ):
     parsed = parsed or parsers.parse_pdf(path, ocr_provider="mock" if cfg.ocr_provider == "mock" else "none")
     dc = DocumentContent(
@@ -393,16 +449,20 @@ def _extract_pdf(
     for issue in parsed.issues:
         dc.issues.append(f"{issue.kind}: {issue.detail}")
     # PDF 文档属性作为证据（extract_metadata.py 深入分析，这里不重复）
-    for pno, page in enumerate(parsed.pages, start=1):
+    pages = parsed.pages[:max_pages] if max_pages else parsed.pages
+    for pno, page in enumerate(pages, start=1):
         text_units = 0
         if page.has_text_layer:
             text_units += _scan_text_block(
                 page.text, builder, fields, dc, doc,
                 location={"kind": "pdf_page", "page": pno, "cover": pno == 1 and _looks_like_cover(page.text)},
-                method="pdf_text_layer", confidence=1.0,
+                method="pdf_text_layer", confidence=1.0, identity_only=identity_only,
             )
         else:
             if page.image_count > 0:
+                if not allow_ocr:
+                    dc.issues.append(f"第 {pno} 页为扫描页；非商务文件仅保留归类信息，不进入 OCR")
+                    continue
                 dc.scanned_pages.append(pno)
                 page_image_hash = _page_image_hash(parsed, pno, doc.sha256)
                 job = job_for_page(
@@ -415,6 +475,26 @@ def _extract_pdf(
                     if ocr:
                         text, conf = ocr
                         mock_results.append(_make_mock_result(job, text, conf))
+        # 文字层与图片可以同时存在：营业执照/资质证书常是清晰嵌入图，
+        # 不能因为页面有少量文字就漏掉 OCR。只为商务/首页身份页建立任务，
+        # 避免把整本技术标膨胀成数百个 OCR 任务。
+        if (
+            not identity_only
+            and doc.category == "bid"
+            and doc.bid_subtype == "business"
+            and page.image_count > 0
+            and any(k in page.text.replace(" ", "") for k in (
+                "营业执照", "统一社会信用代码", "资格证明", "单位名称", "法人代表", "授权代表",
+            ))
+            and page.has_text_layer
+        ):
+            page_image_hash = _page_image_hash(parsed, pno, doc.sha256)
+            job = job_for_page(
+                document_id=doc.document_id, source_sha256=doc.sha256, page=pno,
+                page_image_sha256=page_image_hash, input_ref=safe_input_ref(project_dir, path, pno),
+            )
+            if job.job_id not in {j.job_id for j in jobs}:
+                jobs.append(job)
         dc.text_units += text_units
     return dc, fields, anomalies, jobs, mock_results, parsed
 
@@ -514,25 +594,42 @@ def _scan_text_block(
     location: dict[str, Any],
     method: str,
     confidence: float,
+    identity_only: bool = False,
 ) -> int:
     """对一段文本做字段扫描，产出证据与字段记录。返回非空单元数。"""
     text = text.strip()
     if not text:
         return 0
-    hits = scan_inline(text)
+    # PDF 文本层常把“法人代\n表”“单位\n名称”拆开；同时扫描紧凑变体，
+    # 但保留原文版本作为证据定位，不改写原始文本。
+    variants = [text]
+    compact = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+    if compact != text:
+        variants.append(compact)
+    hits = []
+    seen_hits: set[tuple[str, str]] = set()
+    for variant in variants:
+        for hit in scan_inline(variant):
+            key = (hit.field, hit.value)
+            if key not in seen_hits:
+                seen_hits.add(key)
+                hits.append(hit)
     for hit in hits:
         if doc.category == "bid":
-            # 本版业务口径：技术标和一览表不识别主体/联系人信息；未知分类也不
-            # 猜测为商务标。公共项目字段只接受封面页（商务标/封面分类的第 1 页）。
+            # 归组阶段允许首页提取供应商身份；正式主体字段仍只从商务标正文读取。
             subtype = getattr(doc, "bid_subtype", "unknown")
-            if subtype in ("technical", "bid_schedule", "unknown"):
+            if subtype in ("technical", "bid_schedule", "unknown") and not identity_only:
+                continue
+            if identity_only and hit.field not in {"company_name", "project_name", "project_code", "bid_date", "tenderer"}:
                 continue
             if hit.field in {"project_name", "project_code", "tenderer", "bid_date"}:
                 page = location.get("page")
                 if page != 1 or not location.get("cover", False):
                     continue
+        field_location = dict(location)
+        field_location["via_label"] = bool(hit.via_label)
         out_fields.append(
-            _build_field_record(hit, builder, doc, dict(location), method=method, confidence=min(confidence, hit.confidence))
+            _build_field_record(hit, builder, doc, field_location, method=method, confidence=min(confidence, hit.confidence))
         )
     return 1
 

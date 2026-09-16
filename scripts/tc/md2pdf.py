@@ -114,9 +114,40 @@ def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告", base_di
     styles = _styles()
     doc = SimpleDocTemplate(str(out_path), pagesize=A4,
                             leftMargin=2 * cm, rightMargin=2 * cm,
-                            topMargin=2 * cm, bottomMargin=2 * cm,
+                            topMargin=2.35 * cm, bottomMargin=1.8 * cm,
                             title=title, author="tender-clearance")
     usable = A4[0] - 4 * cm
+
+    def on_page(canvas, document):
+        """统一正式报告页眉页脚：图标在“富奥股份”字样左侧并垂直居中。"""
+        canvas.saveState()
+        font = _register_font()
+        mark = Path(__file__).resolve().parents[2] / "assets" / "fawer-mark.png"
+        header_y = A4[1] - 0.85 * cm
+        mark_size = 18
+        mark_y = header_y - 1.5
+        if mark.is_file():
+            try:
+                canvas.drawImage(str(mark), document.leftMargin, mark_y,
+                                 width=mark_size, height=mark_size,
+                                 preserveAspectRatio=True,
+                                 mask="auto")
+            except Exception:  # noqa: BLE001 - 图片异常时使用文字降级
+                pass
+        canvas.setFont(font, 8.5)
+        canvas.setFillColor(colors.HexColor("#1F4E79"))
+        canvas.drawString(document.leftMargin + mark_size + 5, header_y, "富奥股份")
+        canvas.setFillColor(colors.HexColor("#333333"))
+        canvas.setFont(font, 8.5)
+        canvas.drawRightString(A4[0] - document.rightMargin, header_y, "保密")
+        canvas.setStrokeColor(colors.HexColor("#9AA7B2"))
+        canvas.setLineWidth(0.45)
+        canvas.line(document.leftMargin, A4[1] - 1.05 * cm,
+                    A4[0] - document.rightMargin, A4[1] - 1.05 * cm)
+        canvas.setFont(font, 8)
+        canvas.setFillColor(colors.HexColor("#666666"))
+        canvas.drawCentredString(A4[0] / 2, 0.8 * cm, f"第 {canvas.getPageNumber()} 页")
+        canvas.restoreState()
 
     story: list = []
     lines = md_text.splitlines()
@@ -126,6 +157,12 @@ def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告", base_di
         stripped = line.strip()
 
         if not stripped:
+            i += 1
+            continue
+
+        if stripped == "<!-- PAGEBREAK -->":
+            if story:
+                story.append(PageBreak())
             i += 1
             continue
 
@@ -210,5 +247,5 @@ def md_to_pdf(md_text: str, out_path: Path, title: str = "清标报告", base_di
         story.append(Paragraph(_inline(stripped), styles["body"]))
         i += 1
 
-    doc.build(story)
+    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
     return out_path

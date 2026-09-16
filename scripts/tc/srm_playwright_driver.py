@@ -9,8 +9,8 @@
 - 密码摘要由登录页自身 JS 完成（本驱动只做常规页面输入与提交）。
 
 登录前 DOM（#username/#password/#submit_btn_login、验证码 #inputCode）已于
-2026-09-09 在真实登录页核实；登录后的导航（供应商档案 → 高级查询 → 唯一命中 →
-更全面企业信息 → 企业画像 → 基本信息/司法风险/经营风险）按集成文档 §5–§6 实现，
+2026-09-09 在真实登录页核实；登录后的导航（主页 → 查企业 → 搜索框 → 唯一命中 →
+企业详情/企业画像 → 基本信息/司法风险/经营风险）按真实页面可见文字实现，
 **待一次真实凭据联调验证**；元素定位失败时如实返回 unconfirmed/needs_manual_review。
 """
 
@@ -70,6 +70,103 @@ def _norm(v: str | None) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(v)))
 
 
+def _company_lookup_query(subject: QuerySubject) -> str:
+    """生成 SRM 查企业输入值；保留原主体，去除投标文件盖章后缀。"""
+    if subject.uscc:
+        return subject.uscc
+    name = unicodedata.normalize("NFKC", str(subject.name or ""))
+    # 投标文件常把“(公章)”作为版面标记，SRM 企业库名称不含该标记。
+    name = re.sub(r"\s*[（(]\s*公章\s*[）)]\s*$", "", name)
+    return re.sub(r"\s+", "", name)
+
+
+_COMPANY_NAME_KEYS = (
+    "企业名称", "公司名称", "单位名称", "主体名称", "企业", "公司", "名称",
+)
+_COMPANY_USCC_KEYS = (
+    "统一社会信用代码", "社会信用代码", "信用代码", "统一信用代码", "注册号",
+)
+_USCC_RE = re.compile(r"[0-9A-HJ-NPQRTUWXY]{18}", re.I)
+
+
+def _first_record_value(record: dict[str, Any], keys: tuple[str, ...]) -> str:
+    """按表头优先取值；兼容 SRM 表头带换行、空格或括号的情况。"""
+    normalized = {_norm(str(k)): str(v or "").strip() for k, v in record.items()}
+    for key in keys:
+        value = normalized.get(_norm(key), "")
+        if value and value not in {"-", "--", "暂无", "无"}:
+            return value
+    for raw_key, raw_value in record.items():
+        key = _norm(str(raw_key))
+        if any(_norm(alias) in key for alias in keys):
+            value = str(raw_value or "").strip()
+            if value and value not in {"-", "--", "暂无", "无"}:
+                return value
+    return ""
+
+
+def _normalize_company_candidates(raw_rows: list[dict[str, Any]], query: str = "") -> list[dict[str, str]]:
+    """把“查企业”结果表转换为可核对的候选主体，不从空行或操作列猜主体。"""
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    query_norm = _norm(query)
+    ignored = {"", "-", "--", "暂无", "无", "查看", "详情", "操作"}
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        uscc = _first_record_value(raw, _COMPANY_USCC_KEYS)
+        uscc_match = _USCC_RE.search(uscc)
+        uscc = uscc_match.group(0).upper() if uscc_match else ""
+        name = _first_record_value(raw, _COMPANY_NAME_KEYS)
+        values = [str(v or "").strip() for v in raw.values()]
+        values = [v for v in values if v not in ignored]
+        if not name or _USCC_RE.fullmatch(name):
+            plausible = [
+                v for v in values
+                if not _USCC_RE.fullmatch(v)
+                and not re.fullmatch(r"[\d\s.,:/-]+", v)
+            ]
+            if query_norm:
+                name = next((v for v in plausible if query_norm in _norm(v)), "")
+            if not name and plausible:
+                name = plausible[0]
+        if not name and not uscc:
+            continue
+        if query_norm and len(query_norm) >= 3:
+            candidate_text = _norm(name) + uscc
+            if query_norm not in candidate_text and query_norm[:4] not in candidate_text:
+                continue
+        key = (_norm(name), uscc)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"name": name, "uscc": uscc})
+    return result
+
+
+def _select_company_candidate(
+    rows: list[dict[str, str]], query: str, subject_uscc: str | None = None
+) -> dict[str, str] | None:
+    """在“查企业”结果中选择可证明属于查询主体的唯一卡片。
+
+    SRM 会把同名企业的分支机构一起返回。只要存在一个企业名称完全等于
+    查询名称的卡片，就不应因为其它“名称+分公司”的卡片而整体判为歧义；
+    但多个完全同名主体或多个相同信用代码仍必须人工复核。
+    """
+    query_norm = _norm(query)
+    if subject_uscc:
+        uscc_norm = subject_uscc.upper()
+        exact_uscc = [r for r in rows if str(r.get("uscc") or "").upper() == uscc_norm]
+        if len(exact_uscc) == 1:
+            return exact_uscc[0]
+        if len(exact_uscc) > 1:
+            return None
+    exact_name = [r for r in rows if _norm(r.get("name")) == query_norm]
+    if len(exact_name) == 1:
+        return exact_name[0]
+    return None
+
+
 class PlaywrightSrmDriver:
     """基于 Playwright 的真实浏览器驱动（同步 API）。"""
 
@@ -77,7 +174,7 @@ class PlaywrightSrmDriver:
     version = "srm-browser-playwright/0.1.0"
 
     def __init__(self, headless: bool = False, timeout_ms: int = 45000,
-                 manual_takeover_wait_s: int = 180) -> None:
+                 manual_takeover_wait_s: int = 0) -> None:
         self._headless = headless
         self._timeout = timeout_ms
         self._takeover_wait = manual_takeover_wait_s
@@ -85,6 +182,10 @@ class PlaywrightSrmDriver:
         self._browser = None
         self._context = None
         self._page = None
+        self._active_profile_frame = None
+        # 同一批次复用会话时，查企业页面可能已保持在当前标签。
+        # 只复用查企业搜索面，不复用旧企业画像结果。
+        self._company_search_open = False
 
     # ------------------------------------------------------------ 驱动生命周期
 
@@ -119,7 +220,7 @@ class PlaywrightSrmDriver:
         try:
             text = self._page.evaluate(
                 "document.body.innerText.replace(/\\s+/g,' ').slice(0,500)")
-            return any(k in text for k in ("工作台", "首页", "供应商档案", "应用中心"))
+            return any(k in text for k in ("工作台", "首页", "查企业", "应用中心"))
         except Exception:  # noqa: BLE001
             return False
 
@@ -146,8 +247,10 @@ class PlaywrightSrmDriver:
         cas.locator("#password").fill(password)
         cas.locator("#submit_btn_login").click()
 
-        # 轮询判定（最多 15 秒）：跳转成功 / 出验证码 / 报错，避免把跳转中误判为失败
-        deadline = time.monotonic() + 15
+        # 轮询判定：跳转成功 / 出验证码 / 报错。SRM 认证成功后的工作台
+        # 偶发需要 20~30 秒才把登录 iframe 移除；固定 15 秒会把慢加载误报为
+        # manual。上限 45 秒，成功即返回，不影响正常速度。
+        deadline = time.monotonic() + min(45, max(15, self._timeout / 1000))
         while time.monotonic() < deadline:
             if not any("/cas/login" in f.url for f in self._page.frames) or self._logged_in_hint():
                 self._page.wait_for_timeout(4000)  # 工作台渲染时间
@@ -181,78 +284,85 @@ class PlaywrightSrmDriver:
         return BrowserLoginResult(status="manual", detail="登录未完成（可能触发验证码或网络缓慢），需人工接管")
 
     # ------------------------------------------------------------ 主体检索与核对
-    # 以下导航顺序基于 2026-09-09 真实页面结构探测（srm-nav-dump）：
-    # - 工作台/供应商档案应用在主文档；档案搜索框 id 含 aa_vendorlist；
+    # 以下导航顺序基于已观察到的 SRM 主页：
+    # - 主页最近应用中有“查企业”，直接进入企业搜索，而不是供应商档案；
+    # - 搜索结果必须形成唯一企业候选，随后才允许进入企业详情/画像；
     # - 企业画像在独立 iframe（URL 含 /intellid/portrait/）；
     # - 表格为表头/表体分离渲染；分类计数格式为“分类名 (数字)”。
 
     def search_subject(self, subject: QuerySubject) -> BrowserSubjectResult:
-        """供应商档案 → 关键字搜索 → 唯一命中 → 更全面企业信息 → 画像主体核对。"""
-        query = subject.name or subject.uscc or ""
+        """主页 → 查企业 → 搜索框 → 唯一命中 → 企业详情/画像主体核对。"""
+        query = _company_lookup_query(subject)
 
-        # 工作台导航为复杂树状结构，稳妥路径是“搜索服务名称”应用搜索；
-        # 顶部导航/宫格异步渲染，整体给 12 秒重试窗口。
-        opened = False
-        deadline = time.monotonic() + 12
-        while time.monotonic() < deadline and not opened:
-            opened = (self._open_via_app_search("供应商档案")
-                      or self._click_anywhere(["供应商档案"], exact=True))
-            if not opened:
-                self._page.wait_for_timeout(1500)
-        if not opened:
-            self._dump_debug_page("supplier-entry")
+        # 批量查询中，上一家供应商的画像 iframe/页签可能仍覆盖在查企业
+        # 搜索页上。轻量刷新当前已认证页面，保留 Cookie 但清掉旧画像，
+        # 避免下一家被旧 iframe 或旧分类页吞掉；首次查询不触发刷新。
+        if self._active_profile_frame is not None:
+            try:
+                self._page.reload(timeout=self._timeout, wait_until="domcontentloaded")
+                self._page.wait_for_timeout(2500)
+            except Exception:  # noqa: BLE001
+                pass
+            self._active_profile_frame = None
+            self._company_search_open = False
+
+        if not self._ensure_company_search_open():
+            self._dump_debug_page("company-entry")
             return BrowserSubjectResult(
                 None, None, "unconfirmed",
-                detail="未能通过应用搜索或宫格打开『供应商档案』（页面结构已存 /tmp/srm-nav-debug-*.json 供诊断）")
-        # 微应用可能在新标签页打开：切换到承载供应商档案列表的页面
-        self._focus_vendor_page()
-        self._page.wait_for_timeout(3000)
+                detail="未能从 SRM 主页打开『查企业』搜索（页面结构已存 /tmp/srm-nav-debug-*.json 供诊断）")
 
-        # 高级查询面板：展开面板 → 填编码/名称 → 点查询，作为整体重试
-        # （面板开合存在时序抖动，单步各自尝试会相互干扰）
+        # 直接使用“查企业”搜索框，不打开旧的档案高级查询面板。
         filled = False
-        deadline = time.monotonic() + 40
+        deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if self._open_advanced_query_panel(6000) and self._fill_code_name_input(query):
+            if self._fill_company_search(query):
                 filled = True
                 break
-            self._page.wait_for_timeout(1500)
+            self._page.wait_for_timeout(800)
         if not filled:
-            self._dump_debug_page("vendor-search")
+            self._dump_debug_page("company-search")
             return BrowserSubjectResult(
                 None, None, "unconfirmed",
-                detail="未能打开高级查询面板或未完成关键字填写（页面结构已存 /tmp/srm-nav-debug-*.json 供诊断）")
-        # 结果行异步渲染：轮询等待（最多 12 秒）
-        rows: list = []
+                detail="未能在『查企业』页面找到搜索框或提交查询（页面结构已存 /tmp/srm-nav-debug-*.json 供诊断）")
+        # 结果行异步渲染：轮询等待（最多 12 秒），只采集有企业名称/信用代码的行。
+        rows: list[dict[str, str]] = []
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
-            self._page.wait_for_timeout(1500)
-            rows = self._result_rows(query[:4])
+            self._page.wait_for_timeout(800)
+            rows = self._company_result_rows(query)
             if rows:
                 break
         if len(rows) == 0:
-            self._dump_debug_page("search-result")
+            self._dump_debug_page("company-result")
             return BrowserSubjectResult(
                 None, None, "unconfirmed",
-                detail="查询结果为 0 条（页面结构已存 /tmp/srm-nav-debug-search-result.json 供诊断）")
-        if len(rows) > 1:
+                detail="『查企业』查询结果为 0 条（页面结构已存 /tmp/srm-nav-debug-company-result.json 供诊断）")
+        selected = _select_company_candidate(rows, query, subject.uscc)
+        if selected is None:
             return BrowserSubjectResult(
                 None, None, "unconfirmed",
-                detail=f"查询命中 {len(rows)} 条供应商，主体歧义；不自动选择，需人工确认档案编码")
+                detail=f"『查企业』命中 {len(rows)} 条企业，未找到唯一精确主体；需人工确认企业")
 
-        # 唯一命中：点开行 → 更全面企业信息 → 等待企业画像 iframe
-        self._click_result_row(query[:4])
+        # 精确命中：点击企业结果 → 企业详情/画像 → 等待画像 iframe。
+        self._active_profile_frame = None
+        if not self._click_company_result(selected):
+            return BrowserSubjectResult(None, None, "unconfirmed",
+                                        detail="唯一企业结果无法点击进入详情，需人工核对")
         self._page.wait_for_timeout(2500)
-        self._click_anywhere(["更全面企业信息"])
-        pf = self._wait_profile_ready()
+        self._click_anywhere(["企业详情", "企业画像", "更全面企业信息"], exact=True)
+        # 会话批量查询会保留旧的 portrait iframe；必须等待当前查询主体的
+        # 名称/信用代码出现在同一个 iframe，不能只看到一个旧的“企业名称”就返回。
+        pf = self._wait_profile_ready(query)
         if pf is None:
             return BrowserSubjectResult(None, None, "unconfirmed",
                                         detail="未进入企业画像页（portrait iframe 未出现或未加载），需人工核对")
+        self._active_profile_frame = pf
 
         name, uscc = self._read_identity(pf)
         if uscc and subject.uscc and uscc == subject.uscc:
             confirmation: Literal["confirmed", "candidate"] = "confirmed"
-        elif name and subject.name and _norm(name) == _norm(subject.name) and not subject.uscc:
+        elif name and _norm(name) == _norm(query) and not subject.uscc:
             confirmation = "candidate"
         else:
             return BrowserSubjectResult(
@@ -262,9 +372,16 @@ class PlaywrightSrmDriver:
         return BrowserSubjectResult(
             name, uscc, confirmation,
             profile_ref=f"企业画像（名称={name}，信用代码={uscc}）",
+            detail=f"入口=主页>查企业；精确命中=名称:{selected.get('name') or '-'}，信用代码:{selected.get('uscc') or '-'}；候选总数={len(rows)}",
         )
 
     def _wait_profile_frame(self, timeout_ms: int | None = None):
+        if self._active_profile_frame is not None:
+            try:
+                if "/intellid/portrait/" in self._active_profile_frame.url:
+                    return self._active_profile_frame
+            except Exception:  # noqa: BLE001
+                self._active_profile_frame = None
         deadline = time.monotonic() + (timeout_ms or self._timeout) / 1000
         while time.monotonic() < deadline:
             all_frames = [f for pg in self._context.pages for f in pg.frames]
@@ -309,8 +426,8 @@ class PlaywrightSrmDriver:
         except Exception:  # noqa: BLE001
             return ""
 
-    def _wait_profile_ready(self, timeout_ms: int | None = None):
-        """等待画像 iframe 出现且内容加载（可见文本包含主体字段）。"""
+    def _wait_profile_ready(self, expected_query: str | None = None, timeout_ms: int | None = None):
+        """等待当前主体的画像 iframe 出现且内容加载。"""
         deadline = time.monotonic() + (timeout_ms or 20000) / 1000
         while time.monotonic() < deadline:
             all_frames = [f for pg in self._context.pages for f in pg.frames]
@@ -321,33 +438,50 @@ class PlaywrightSrmDriver:
                     text = self._full_text(frame)
                 except Exception:  # noqa: BLE001
                     continue
-                if ("企业名称" in text) or ("统一社会信用代码" in text):
+                if not (("企业名称" in text) or ("统一社会信用代码" in text)):
+                    continue
+                if expected_query:
+                    compact_text = _norm(text)
+                    if re.fullmatch(r"[0-9A-HJ-NPQRTUWXY]{18}", expected_query, re.I):
+                        if expected_query.upper() not in compact_text.upper():
+                            continue
+                    elif _norm(expected_query) not in compact_text:
+                        # 名称查询时先等待当前结果真正替换旧 iframe。
+                        continue
                     return frame
             self._page.wait_for_timeout(1000)
         return None
 
     def _read_identity(self, pf) -> tuple[str | None, str | None]:
-        """从画像页文本按行结构取主体：『统一社会信用代码』行的下一行为代码，
-        向上最近『企业名称』行的下一行为名称（画像文本中存在多个企业名称
-        ——对外投资等区块 —— 不能用全文正则取第一个）。"""
+        """兼容标签/值同一行或分行的画像文本，读取主体身份。"""
         text = self._full_text(pf)
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
         uscc = None
         uscc_idx = None
         for i, ln in enumerate(lines):
-            if ln == "统一社会信用代码" and i + 1 < len(lines) \
-                    and re.fullmatch(r"[0-9A-HJ-NPQRTUWXY]{18}", lines[i + 1], re.I):
-                uscc = lines[i + 1].upper()
-                uscc_idx = i + 1
+            inline = re.search(r"统一社会信用代码\s*[:：]?\s*([0-9A-HJ-NPQRTUWXY]{18})", ln, re.I)
+            if inline:
+                uscc = inline.group(1).upper()
+                uscc_idx = i
                 break
-        name = None
-        if uscc_idx:
-            for i in range(uscc_idx - 1, -1, -1):
-                if lines[i] == "企业名称" and i + 1 < len(lines):
-                    cand = lines[i + 1]
-                    if 2 <= len(cand) <= 60 and cand != "统一社会信用代码":
-                        name = cand
+            if ln.rstrip(":：") == "统一社会信用代码" and i + 1 < len(lines):
+                hit = re.search(r"[0-9A-HJ-NPQRTUWXY]{18}", lines[i + 1], re.I)
+                if hit:
+                    uscc = hit.group(0).upper()
+                    uscc_idx = i + 1
                     break
+        name = None
+        search_lines = lines[:uscc_idx + 1] if uscc_idx is not None else lines[:80]
+        for i, ln in enumerate(search_lines):
+            inline = re.search(r"企业名称\s*[:：]\s*(.{2,60})", ln)
+            if inline:
+                name = inline.group(1).strip()
+            elif ln.rstrip(":：") == "企业名称" and i + 1 < len(search_lines):
+                cand = search_lines[i + 1]
+                if 2 <= len(cand) <= 60 and cand != "统一社会信用代码":
+                    name = cand
+        # 页面可能只把企业名称放在顶部且信用代码字段隐藏，取第一个明确的
+        # 企业名称值；不从股东/对外投资表格的任意公司名猜主体。
         return name, uscc
 
     # ------------------------------------------------------------ 页面读取
@@ -365,11 +499,20 @@ class PlaywrightSrmDriver:
                 "branches": ["分支机构"],
                 "personnel": ["主要人员"],
             }[section]
-            if not self._click_in_frame(pf, labels):
+            header_groups = {
+                # SRM 的股东区可能同时有“发起人/股东”和“工商股东”两张表，
+                # 两者都属于股东记录；不能用全页第一张表兜底。
+                "shareholders": (("公司名称或股东名称",), ("发起人名称", "发起人类型")),
+                "branches": (("分支机构",),),
+                "personnel": (("姓名", "职位"),),
+            }[section]
+            clicked = self._click_in_frame(pf, labels)
+            if clicked:
+                pf.page.wait_for_timeout(1200)
+            records = self._frame_table_rows(pf, header_groups)
+            if not clicked and not records:
                 return BrowserSectionResult(section=section, structured=False,
                                             detail=f"画像页未找到『{labels[0]}』入口，需人工核对")
-            pf.page.wait_for_timeout(2500)
-            records = self._frame_table_rows(pf)
             return BrowserSectionResult(
                 section=section,
                 records=records,
@@ -401,16 +544,45 @@ class PlaywrightSrmDriver:
         fields: dict[str, Any] = {}
         text = self._full_text(pf)
         # 按真实画像字段提取（label 与 value 为相邻可见文本行）
-        keys = ("企业名称", "统一社会信用代码", "法定代表人", "注册资本", "实缴资本",
-                "成立日期", "企业状态", "企业类型", "注册地址", "所属行业",
-                "人员规模", "参保人数", "曾用名", "注册号")
+        label_aliases = {
+            "企业名称": "企业名称",
+            "统一社会信用代码": "统一社会信用代码",
+            "法定代表人身份证号": "法定代表人身份证号",
+            "法人代表身份证号": "法人代表身份证号",
+            "法人身份证号": "法人身份证号",
+            "法定代表人证件号": "法定代表人证件号",
+            "法定代表人": "法定代表人",
+            "法人代表": "法人代表",
+            "注册资本": "注册资本",
+            "实缴资本": "实缴资本",
+            "成立日期": "成立日期",
+            "企业状态": "企业状态",
+            "企业类型": "企业类型",
+            "注册地址": "注册地址",
+            "所属行业": "所属行业",
+            "人员规模": "人员规模",
+            "参保人数": "参保人数",
+            "曾用名": "曾用名",
+            "注册号": "注册号",
+        }
+        # 长标签优先，避免“法定代表人”截断“法定代表人身份证号”。
+        labels = sorted(label_aliases, key=len, reverse=True)
+        keys = tuple(label_aliases)
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
         for i, ln in enumerate(lines):
-            k = ln.rstrip(":：")
-            if k in keys and k not in fields and i + 1 < len(lines):
-                v = lines[i + 1].strip()
-                if v and v not in keys and "：" not in v:
-                    fields[k] = v[:80]
+            matched_label = next((label for label in labels if ln.startswith(label)), None)
+            if matched_label is None:
+                continue
+            canonical = label_aliases[matched_label]
+            inline = ln[len(matched_label):].lstrip(" ：:")
+            if inline and canonical not in fields:
+                fields[canonical] = inline[:80]
+                continue
+            if canonical in fields or i + 1 >= len(lines):
+                continue
+            v = lines[i + 1].strip()
+            if v and v not in keys and not any(v.startswith(label) for label in labels):
+                fields[canonical] = v[:80]
         for key in _BASIC_COUNT_KEYS:
             m = re.search(re.escape(key) + r"\s*[（(](\d+)[）)]", text)
             if m:
@@ -423,21 +595,37 @@ class PlaywrightSrmDriver:
         )
 
     _TABLE_PAIR_JS = """
-        () => {
-          const tables = [...document.querySelectorAll('table')];
+        (expectedGroups) => {
+          const visible = (el) => {
+            const r = el.getBoundingClientRect();
+            const s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== 'none'
+              && s.visibility !== 'hidden' && s.opacity !== '0';
+          };
+          const tables = [...document.querySelectorAll('table')].filter(visible);
           const headSets = [];
           tables.forEach(t => {
             const ths = [...t.querySelectorAll('thead th')].map(th => (th.innerText||'').trim());
             if (ths.filter(Boolean).length >= 2) headSets.push(ths);
           });
+          const norm = (value) => String(value || '').replace(/\\s+/g, '');
+          const matchesGroup = (heads, group) => group.every(expected =>
+            heads.some(head => norm(head).includes(norm(expected)))
+          );
+          const scopedHeads = expectedGroups && expectedGroups.length
+            ? headSets.filter(heads => expectedGroups.some(group => matchesGroup(heads, group)))
+            : headSets;
           const out = [];
           tables.forEach(t => {
+            if (!visible(t)) return;
             [...t.querySelectorAll('tbody tr')].forEach(tr => {
+              if (!visible(tr)) return;
               const cells = [...tr.querySelectorAll('td')].map(td => (td.innerText||'').trim());
               if (cells.length < 2 || !cells.some(c => c)) return;
-              // 列数一致的表头组优先；否则退回第一组
-              const heads = headSets.find(hs => hs.length === cells.length)
-                || (headSets[0] || []);
+              // 列数一致且属于目标栏目的一组表头才允许配对；没有目标表头
+              // 时直接跳过，禁止把别的栏目或变更记录当成当前栏目。
+              const heads = scopedHeads.find(hs => hs.length === cells.length);
+              if (expectedGroups && expectedGroups.length && !heads) return;
               const rec = {};
               cells.forEach((c, i) => {
                 const key = heads[i] && heads[i] !== '操作' ? heads[i] : (heads[i] || `列${i+1}`);
@@ -450,99 +638,268 @@ class PlaywrightSrmDriver:
         }
     """
 
-    def _frame_table_rows(self, pf) -> list[dict[str, str]]:
+    def _frame_table_rows(self, pf, expected_groups: tuple[tuple[str, ...], ...] = ()) -> list[dict[str, str]]:
         """读取画像 iframe 内的数据行：逐表配对表头（处理表头/表体分离渲染）。"""
         try:
-            return pf.evaluate(self._TABLE_PAIR_JS) or []
+            return pf.evaluate(self._TABLE_PAIR_JS, [list(group) for group in expected_groups]) or []
         except Exception:  # noqa: BLE001
             return []
 
     # ------------------------------------------------------------ 通用定位辅助
 
-    def _vendor_pages(self) -> list:
-        """返回 context 中承载供应商档案（aa_vendorlist）的页面，可见者优先。"""
-        all_pages = [self._page] + [p for p in self._context.pages if p is not self._page]
-        visible, any_hit = [], []
-        for pg in all_pages:
+    def _all_frames(self) -> list:
+        pages = []
+        if self._page is not None:
+            pages.append(self._page)
+        if self._context is not None:
+            pages.extend(p for p in self._context.pages if p not in pages)
+        frames = []
+        for page in pages:
             try:
-                if pg.locator('input[id*="aa_vendorlist"]').count():
-                    any_hit.append(pg)
-                    if pg.locator('input[id*="aa_vendorlist"]').first.is_visible():
-                        visible.append(pg)
+                frames.extend(page.frames)
             except Exception:  # noqa: BLE001
                 continue
-        return visible + [p for p in any_hit if p not in visible]
+        return frames
 
-    def _focus_vendor_page(self) -> None:
-        pages = self._vendor_pages()
-        if pages and pages[0] is not self._page:
-            self._page = pages[0]
+    def _company_search_input(self):
+        """定位“查企业”搜索框，排除旧供应商档案和工作台服务搜索框。"""
+        selectors = (
+            # “查企业”实际使用的搜索框：不同版本分别暴露为 ykj-search
+            # 或 keyword/placeholder=请输入企业名称、请输入关键字。
+            # 必须优先于工作台的服务搜索框。
+            'input#ykj-search',
+            'input#keyword',
+            'input[placeholder="请输入企业名称"]',
+            'input[type="search"][placeholder="请输入关键字"]',
+            'input[placeholder="请输入关键字"]',
+            'input[placeholder*="企业"]',
+            'input[placeholder*="公司"]',
+            'input[placeholder*="统一社会信用代码"]',
+            'input[placeholder*="关键字"]',
+            'input[placeholder*="关键词"]',
+            'input[placeholder*="搜索"]',
+            'input[aria-label*="企业"]',
+            'input[type="text"]',
+        )
+        for frame in self._all_frames():
+            for selector in selectors:
+                try:
+                    for loc in frame.locator(selector).all():
+                        if not loc.is_visible():
+                            continue
+                        attrs = loc.evaluate("""el => ({
+                            id: el.id || '',
+                            placeholder: el.getAttribute('placeholder') || '',
+                            aria: el.getAttribute('aria-label') || '',
+                            fieldid: el.getAttribute('fieldid') || ''
+                        })""") or {}
+                        marker = " ".join(str(attrs.get(k, "")) for k in ("id", "placeholder", "aria", "fieldid"))
+                        # aa_vendorlist|children|search 是“查企业”页面的输入框，
+                        # 不能再按旧供应商档案规则排除；仅排除工作台服务搜索。
+                        if "搜索服务名称" in marker or attrs.get("placeholder") == "搜索" \
+                                or attrs.get("fieldid") == "workbench-search":
+                            continue
+                        return frame, loc
+                except Exception:  # noqa: BLE001
+                    continue
+        return None, None
 
-    def _open_advanced_query_panel(self, timeout_ms: int = 10000) -> bool:
-        """确保高级查询面板展开：先查输入框是否可见；未展开则点一次开关并等待。
+    def _ensure_company_search_open(self) -> bool:
+        """从 SRM 主页直接打开“查企业”，不复用供应商档案入口。"""
+        if self._company_search_open and self._company_search_input()[1] is not None:
+            self._company_search_open = True
+            return True
+        self._company_search_open = False
 
-        每次调用至多点一次（按钮是切换式的，连点会开-关往返）；外层组合循环
-        负责必要时整轮重试。
-        """
-        deadline = time.monotonic() + timeout_ms / 1000
-        clicked = False
-        while time.monotonic() < deadline:
+        # 上一家公司可能把当前页留在画像详情；先回到门户主页，保留登录 Cookie。
+        try:
+            home_text = self._full_text(self._page.main_frame)
+        except Exception:  # noqa: BLE001
+            home_text = ""
+        if "查企业" not in home_text:
             try:
-                inp = self._page.locator('input#yssupplierInputcode, input[placeholder="编码/名称"]').first
-                if inp.count() and inp.is_visible():
-                    return True
+                self._page.goto(Portal, timeout=self._timeout, wait_until="domcontentloaded")
+                self._page.wait_for_timeout(1500)
             except Exception:  # noqa: BLE001
                 pass
-            if not clicked:
-                try:
-                    loc = self._page.locator(
-                        'button:has(i.yonicon-gaojichaxun), i.yonicon-gaojichaxun')
-                    for cand in loc.all():
-                        try:
-                            if cand.is_visible():
-                                cand.click(timeout=5000)
-                                clicked = True
-                                self._page.wait_for_timeout(4000)
-                                break
-                        except Exception:  # noqa: BLE001
-                            continue
-                except Exception:  # noqa: BLE001
-                    pass
-            else:
-                self._page.wait_for_timeout(1000)
+
+        opened = self._click_anywhere(["查企业"], exact=True)
+        if not opened:
+            # 主页最近应用偶发尚未完成渲染；只允许从主页应用搜索“查企业”兜底。
+            opened = self._open_via_app_search("查企业")
+        if not opened:
+            return False
+
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            if self._company_search_input()[1] is not None:
+                self._company_search_open = True
+                return True
+            self._page.wait_for_timeout(500)
         return False
 
-    def _fill_code_name_input(self, value: str) -> bool:
-        """向编码/名称输入框写入关键字，并触发查询。
-
-        高级查询为模态弹窗，提交按钮有两种形态：
-        - 弹窗底部蓝色「查询」文字按钮（get_by_role 精确匹配）；
-        - 列表工具栏的 btnDirectSearch 图标按钮（非弹窗布局）。
-        """
+    def _fill_company_search(self, value: str) -> bool:
+        """填写“查企业”搜索框并提交，输入为空时不触发查询。"""
+        if not value.strip():
+            return False
+        frame, inp = self._company_search_input()
+        if frame is None or inp is None:
+            return False
         try:
-            inp = self._page.locator('input#yssupplierInputcode, input[placeholder="编码/名称"]').first
-            if not (inp.count() and inp.is_visible()):
-                return False
             inp.click()
             inp.fill(value)
-            # 1) 弹窗底部「查询」文字按钮
-            try:
-                for btn in self._page.get_by_role("button", name="查询", exact=True).all():
-                    if btn.is_visible():
-                        btn.click(timeout=5000)
+            # 当前真实页面按钮文案是“查一下”，不是“搜索/查询”。
+            for label in ("查一下", "查询", "搜索"):
+                for loc in (frame.get_by_role("button", name=label, exact=True),
+                            frame.get_by_text(label, exact=True)):
+                    for button in loc.all():
+                        if button.is_visible():
+                            button.click(timeout=5000)
+                            return True
+            # 兼容按钮仅有 class/type、无稳定可访问名称的版本。
+            for button in frame.locator('button.ep-search-btn, button[type="submit"]').all():
+                try:
+                    if button.is_visible():
+                        button.click(timeout=5000)
                         return True
-            except Exception:  # noqa: BLE001
-                pass
-            # 2) 工具栏 btnDirectSearch 图标按钮
-            btn = self._page.locator('button.btnDirectSearch').first
-            if btn.count() and btn.is_visible():
-                btn.click(timeout=5000)
+                except Exception:  # noqa: BLE001
+                    continue
+            # 当前真实页面没有“搜索/查询”文字按钮，输入框右侧只有放大镜图标。
+            # 逐级在输入框容器内寻找可见搜索控件并点击，覆盖 button、role=button
+            # 以及图标元素，避免只 press Enter 而停留在“暂无相关内容”。
+            clicked_icon = inp.evaluate(
+                """
+                (input) => {
+                  const visible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    const s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.display !== 'none'
+                      && s.visibility !== 'hidden' && s.opacity !== '0';
+                  };
+                  let root = input.parentElement;
+                  for (let depth = 0; root && depth < 5; depth++, root = root.parentElement) {
+                    const candidates = [...root.querySelectorAll(
+                      'button, [role="button"], [aria-label*="搜索"], [title*="搜索"], '
+                      '[class*="search"], [class*="Search"], [class*="icon"], [class*="Icon"]'
+                    )].filter(el => el !== input && visible(el));
+                    const preferred = candidates.find(el => {
+                      const marker = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${el.className || ''}`;
+                      return /搜索|search|icon/i.test(marker);
+                    }) || candidates[0];
+                    if (preferred) {
+                      preferred.click();
+                      return true;
+                    }
+                  }
+                  return false;
+                }
+                """
+            )
+            if clicked_icon:
+                self._page.wait_for_timeout(400)
                 return True
-            # 3) 回车兜底
             inp.press("Enter")
             return True
         except Exception:  # noqa: BLE001
             return False
+
+    _COMPANY_ROWS_JS = """
+        () => {
+          const visible = (el) => {
+            const r = el.getBoundingClientRect();
+            const s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== 'none'
+              && s.visibility !== 'hidden' && s.opacity !== '0';
+          };
+          const text = (el) => (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+          const out = [];
+          for (const table of [...document.querySelectorAll('table')].filter(visible)) {
+            let heads = [...table.querySelectorAll('thead th')].map(text);
+            const rows = [...table.querySelectorAll('tbody tr')].filter(visible);
+            if (!heads.length) {
+              const first = table.querySelector('tr');
+              if (first) heads = [...first.querySelectorAll('th')].map(text);
+            }
+            for (const row of rows) {
+              const cells = [...row.querySelectorAll('td')].map(text);
+              if (!cells.some(Boolean)) continue;
+              const rec = {};
+              cells.forEach((cell, i) => { rec[heads[i] || `列${i + 1}`] = cell; });
+              out.push(rec);
+            }
+          }
+          if (out.length) return out;
+          for (const row of [...document.querySelectorAll('[role="row"]')].filter(visible)) {
+            const cells = [...row.querySelectorAll('[role="cell"], [role="gridcell"]')].map(text);
+            if (cells.some(Boolean)) {
+              const rec = {};
+              cells.forEach((cell, i) => { rec[`列${i + 1}`] = cell; });
+              out.push(rec);
+            }
+          }
+          // 当前“查企业”不是 table，而是企业卡片：企业名在 .col-name，
+          // 法人/注册资本/成立日期等信息位于同一 .info-block。只把卡片
+          // 作为候选，不从推荐词或页面其它公司名猜主体。
+          for (const nameEl of [...document.querySelectorAll('.col-name')].filter(visible)) {
+            const card = nameEl.closest('.info-block') || nameEl.parentElement;
+            if (!card || !visible(card)) continue;
+            const name = text(nameEl);
+            if (!name) continue;
+            const cardText = text(card);
+            const legal = (cardText.match(/法人[：:]\\s*([^\\s]+)/) || [])[1] || '';
+            out.push({企业名称: name, 法定代表人: legal});
+          }
+          return out;
+        }
+    """
+
+    def _company_result_rows(self, query: str) -> list[dict[str, str]]:
+        raw: list[dict[str, Any]] = []
+        for frame in self._all_frames():
+            try:
+                rows = frame.evaluate(self._COMPANY_ROWS_JS) or []
+                if isinstance(rows, list):
+                    raw.extend(row for row in rows if isinstance(row, dict))
+            except Exception:  # noqa: BLE001
+                continue
+        return _normalize_company_candidates(raw, query)
+
+    _CLICK_COMPANY_ROW_JS = """
+        (keyword) => {
+          const visible = (el) => {
+            const r = el.getBoundingClientRect();
+            const s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== 'none'
+              && s.visibility !== 'hidden' && s.opacity !== '0';
+          };
+          const elements = [...document.querySelectorAll('tr, [role="row"], li')]
+            .filter(visible)
+            .filter(el => (el.innerText || el.textContent || '').includes(keyword));
+          if (elements.length) {
+            const row = elements.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length)[0];
+            row.scrollIntoView({block: 'center'});
+            row.click();
+            return true;
+          }
+          const exact = [...document.querySelectorAll('a, button, span, div')]
+            .find(el => visible(el) && (el.innerText || el.textContent || '').trim() === keyword);
+          if (exact) { exact.click(); return true; }
+          return false;
+        }
+    """
+
+    def _click_company_result(self, candidate: dict[str, str]) -> bool:
+        keywords = [candidate.get("name", ""), candidate.get("uscc", "")]
+        for keyword in keywords:
+            if not keyword:
+                continue
+            for frame in self._all_frames():
+                try:
+                    if frame.evaluate(self._CLICK_COMPANY_ROW_JS, keyword):
+                        return True
+                except Exception:  # noqa: BLE001
+                    continue
+        return False
 
     def _wait_click_anywhere(self, texts: list[str], timeout_ms: int = 15000) -> bool:
         """等待元素渲染后点击（工作台宫格/菜单异步加载）。"""
@@ -577,8 +934,7 @@ class PlaywrightSrmDriver:
                         continue
                     el.fill(app_name)
                     frame.page.wait_for_timeout(1500)
-                    # 1) 真实点击“文本恰为应用名”的可见元素（子串匹配会命中
-                    #    “供应商档案采购项目”这类拼接容器，点了无效）
+                    # 1) 真实点击“文本恰为应用名”的可见元素，避免点中拼接容器。
                     try:
                         items = frame.get_by_text(app_name, exact=True).all()
                     except Exception:  # noqa: BLE001
@@ -603,16 +959,10 @@ class PlaywrightSrmDriver:
         return False
 
     def _app_opened(self, app_name: str) -> bool:
-        """判断供应商档案应用是否已打开：其搜索框必须可见（非 0 尺寸）。"""
-        try:
-            if self._page.locator('input[id*="aa_vendorlist"]').first.is_visible():
-                return True
-            return any(
-                f.locator('input[id*="aa_vendorlist"]').first.is_visible()
-                for f in self._page.frames if f is not self._page.main_frame
-            )
-        except Exception:  # noqa: BLE001
-            return False
+        """判断主页应用是否已打开：查企业以搜索框可见为准。"""
+        if app_name == "查企业":
+            return self._company_search_input()[1] is not None
+        return False
 
     def _dump_debug_page(self, tag: str) -> None:
         """定位失败时保存各 frame 可见文本摘要（不含业务数据内容），便于远程诊断。"""
@@ -683,122 +1033,6 @@ class PlaywrightSrmDriver:
                     continue
         return False
 
-    _VENDOR_SEARCH_JS = """
-        (val) => {
-          const sel = 'input[id*="aa_vendorlist"]';
-          let el = document.querySelector(sel)
-            || [...document.querySelectorAll('input')].find(i => i.placeholder === '请输入关键字');
-          if (!el) return false;
-          el.focus();
-          const setter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value').set;
-          setter.call(el, val);
-          el.dispatchEvent(new Event('input', {bubbles: true}));
-          el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true}));
-          // 同时尝试点击“查询”按钮（叶子/按钮元素）
-          const btns = [...document.querySelectorAll('button, a, span, div')]
-            .filter(e => (e.innerText||'').trim() === '查询' && e.children.length <= 1);
-          if (btns.length) btns[btns.length - 1].click();
-          return true;
-        }
-    """
-
-    def _fill_vendor_search(self, value: str) -> bool:
-        """档案搜索框（id 含 aa_vendorlist）：React 受控输入用原生 setter 写值。
-
-        面板未展开（输入框不可见）时先点「高级查询」展开再试。
-        """
-        for attempt in range(2):
-            for frame in self._page.frames:
-                try:
-                    if frame.evaluate(self._VENDOR_SEARCH_JS, value):
-                        return True
-                except Exception:  # noqa: BLE001
-                    continue
-            if attempt == 0:
-                self._click_anywhere(["高级查询"])
-                self._page.wait_for_timeout(2000)
-        return False
-
-    # 结果网格可能是 div 网格（无 <table>）且名称列会截断（如“腾讯云计…”）：
-    # 按“包含关键字前缀的最内层可见元素”识别行，穿透 shadow DOM，按 y 聚合（±4px）。
-    _ROW_WALK_JS = """
-        (kw) => {
-          const all = [];
-          const walk = (root) => {
-            for (const e of root.querySelectorAll('*')) {
-              all.push(e);
-              if (e.shadowRoot) walk(e.shadowRoot);
-            }
-          };
-          walk(document);
-          const hits = [];
-          for (const e of all) {
-            let t = '';
-            try { t = (e.innerText || e.textContent || '').trim(); } catch (err) { continue; }
-            if (!t.includes(kw) || t.length > 120) continue;
-            const r = e.getBoundingClientRect();
-            if (r.width < 30 || r.height < 8) continue;
-            const childHit = [...e.children].some(c => (c.textContent||'').includes(kw))
-              || (e.shadowRoot && e.shadowRoot.textContent.includes(kw));
-            if (childHit) continue;
-            hits.push({node: e, startsWith: t.startsWith(kw),
-                       text: t.replace(/\\s+/g,' ').slice(0,120), y: Math.round(r.y)});
-          }
-          return hits;
-        }
-    """
-
-    def _result_rows(self, keyword: str) -> list:
-        try:
-            hits = self._page.evaluate(self._ROW_WALK_JS, keyword) or []
-        except Exception:  # noqa: BLE001
-            return []
-        # 顶部“已选条件: 供应商:名称”标签也含关键字但非结果行：
-        # 优先取以关键字开头的命中（网格单元格），无则退回全部命中
-        pref = [h for h in hits if h.get("startsWith")]
-        if pref:
-            hits = pref
-        rows: dict[int, list] = {}
-        for h in sorted(hits, key=lambda x: x["y"]):
-            anchor = next((k for k in rows if abs(k - h["y"]) <= 4), h["y"])
-            rows.setdefault(anchor, []).append(h)
-        return [v for _, v in sorted(rows.items())]
-
-    def _click_result_row(self, keyword: str) -> None:
-        try:
-            self._page.evaluate("""
-                (kw) => {
-                  const all = [];
-                  const walk = (root) => {
-                    for (const e of root.querySelectorAll('*')) {
-                      all.push(e);
-                      if (e.shadowRoot) walk(e.shadowRoot);
-                    }
-                  };
-                  walk(document);
-                  const hits = [];
-                  for (const e of all) {
-                    let t = '';
-                    try { t = (e.innerText || e.textContent || '').trim(); } catch (err) { continue; }
-                    if (!t.includes(kw) || t.length > 120) continue;
-                    const r = e.getBoundingClientRect();
-                    if (r.width < 30 || r.height < 8) continue;
-                    const childHit = [...e.children].some(c => (c.textContent||'').includes(kw))
-                      || (e.shadowRoot && e.shadowRoot.textContent.includes(kw));
-                    if (childHit) continue;
-                    hits.push(e);
-                  }
-                  if (hits.length) {
-                    const el = hits[hits.length - 1];
-                    el.scrollIntoView({block: 'center'});
-                    el.click();
-                  }
-                }
-            """, keyword)
-        except Exception:  # noqa: BLE001
-            pass
-
     def close(self) -> None:
         for closer in (
             lambda: self._context and self._context.close(),
@@ -810,12 +1044,20 @@ class PlaywrightSrmDriver:
             except Exception:  # noqa: BLE001
                 pass
         self._page = self._context = self._browser = self._pw = None
+        self._active_profile_frame = None
+        self._company_search_open = False
 
 
 def ensure_registered(headless: bool = True) -> None:
     """把 Playwright 驱动注册进宿主注册表（供 SrmAdapter / 流水线使用）。"""
+    timeout_ms = int(os.environ.get("SRM_BROWSER_TIMEOUT_MS", "45000"))
+    manual_wait_s = int(os.environ.get("SRM_MANUAL_TAKEOVER_WAIT_SECONDS", "0"))
     register_browser_driver(
-        factory=lambda: PlaywrightSrmDriver(headless=headless),
+        factory=lambda: PlaywrightSrmDriver(
+            headless=headless,
+            timeout_ms=max(1000, timeout_ms),
+            manual_takeover_wait_s=max(0, manual_wait_s),
+        ),
         credential_provider=lambda: BrowserCredentials(
             username=os.environ.get("SRM_USER", ""),
             password=os.environ.get("SRM_PASSWORD", ""),

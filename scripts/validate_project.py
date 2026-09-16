@@ -100,7 +100,14 @@ def run(
         problems.append(Problem("bids/", "缺少标书目录"))
     else:
         subs = [p for p in (project_dir / "bids").iterdir() if p.is_dir() and not p.name.startswith(".")]
-        if not subs:
+        flat_input = any(
+            p.is_file() for p in (project_dir / "bids").iterdir()
+        ) or any(
+            (project_dir / "bids" / marker).is_dir()
+            and any((project_dir / "bids" / marker).rglob("*"))
+            for marker in ("inbox", "incoming", "uploads")
+        )
+        if not subs and not flat_input:
             problems.append(Problem("bids/", "未发现供应商子目录"))
     if not (project_dir / "procurement").is_dir():
         problems.append(Problem("procurement/", "缺少采购文件目录（如确实没有，请人工确认）"))
@@ -113,6 +120,18 @@ def run(
                     problems.append(Problem(f"output/interim/{name}", "缺少产物（final 模式要求全部存在）"))
                 continue
             validate_schema_file(load_json_file(path), SCHEMA_DIR / schema_name, problems, f"output/interim/{name}")
+
+    if stage == "final" and 'flat_input' in locals() and flat_input:
+        grouping_path = project_dir / "output/interim/supplier-grouping.json"
+        if not grouping_path.exists():
+            problems.append(Problem("output/interim/supplier-grouping.json", "平铺上传尚未完成供应商归组"))
+        else:
+            try:
+                grouping = load_json_file(grouping_path)
+                if grouping.get("status") != "resolved":
+                    problems.append(Problem("output/interim/supplier-grouping.json", "供应商归组状态不是 resolved"))
+            except (OSError, ValueError, TypeError):
+                problems.append(Problem("output/interim/supplier-grouping.json", "供应商归组文件无法读取"))
 
     if stage == "final" and not problems:
         try:

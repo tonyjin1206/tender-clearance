@@ -352,6 +352,9 @@ class SrmBrowserClient:
                 detail="已完成主体确认，但页面没有可机读的结构化结果；不能据此结论为无风险，需人工复核页面",
                 request_mode="browser_session",
                 response_ref="; ".join(refs) or None,
+                resolved_name=matched.name,
+                resolved_uscc=matched.uscc,
+                subject_confirmation=matched.confirmation,
             )
         if records:
             return AdapterResult(
@@ -364,10 +367,16 @@ class SrmBrowserClient:
                 ),
                 request_mode="browser_session",
                 response_ref="; ".join(refs) or matched.profile_ref,
+                resolved_name=matched.name,
+                resolved_uscc=matched.uscc,
+                subject_confirmation=matched.confirmation,
             )
         return AdapterResult(
             status="no_result",
             detail="页面已打开但没有可确认的记录；不能据此结论为无风险",
             request_mode="browser_session",
             response_ref="; ".join(refs) or matched.profile_ref,
+            resolved_name=matched.name,
+            resolved_uscc=matched.uscc,
+            subject_confirmation=matched.confirmation,
         )

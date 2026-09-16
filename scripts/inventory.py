@@ -100,8 +100,31 @@ def _probe_ooxml(path: Path) -> tuple[int | None, str, str | None]:
         return None, "corrupt", f"OOXML 容器损坏：{exc}"
 
 
-def _classify_bid_document(path: Path, media_type: str) -> str:
-    """按文件名和格式做保守分类；分类不替代人工确认。"""
+def _first_page_text(path: Path, media_type: str) -> str:
+    """读取 PDF 首页文字层，供文件类型初判；不以文件名代替内容证据。"""
+    if media_type != "application/pdf":
+        return ""
+    try:
+        fitz = parsers.import_fitz()
+        with fitz.open(path) as doc:
+            return doc[0].get_text("text") if len(doc) else ""
+    except Exception:  # noqa: BLE001 - 盘点阶段只保留可观察异常
+        return ""
+
+
+def _classify_bid_document(path: Path, media_type: str, first_page_text: str = "") -> str:
+    """先看首页内容，再用文件名作弱提示；该分类不负责供应商归组。"""
+    content = first_page_text.replace(" ", "").replace("\n", "")
+    if any(k in content for k in ("投标一览表", "开标一览表", "投标报价")):
+        return "bid_schedule"
+    if "技术部分" in content or "技术标" in content or "投标文件(技术)" in content:
+        return "technical"
+    if "商务部分" in content or "商务标" in content or "投标文件(商务)" in content:
+        return "business"
+    if "封面" in content:
+        return "cover"
+
+    # 扫描件首页无文字层时，文件名只用于决定读取策略，不能用于供应商归组。
     name = path.name.lower()
     if path.suffix.lower() in (".xlsx", ".xls") or "一览" in name or "报价" in name:
         return "bid_schedule"
@@ -148,12 +171,14 @@ def run(
             supplier_dir = None
             if category == "bid":
                 try:
-                    supplier_dir = path.relative_to(base).parts[0]
+                    first_part = path.relative_to(base).parts[0]
+                    # inbox/incoming 是上传暂存区，不是供应商目录；供应商归组由
+                    # resolve_supplier_groups.py 根据正文/OCR 证据完成。
+                    if first_part not in {"inbox", "incoming", "uploads"}:
+                        supplier_dir = first_part
                 except IndexError:
                     supplier_dir = None
-                    anomalies.append(
-                        ExtractionAnomaly(relative_path=rel, anomaly="bid_file_without_supplier_dir", detail="bids/ 根下的文件未归入任何供应商目录")
-                    )
+            first_page_text = _first_page_text(path, media) if category == "bid" else ""
             page_count, status, detail = _light_probe(path, media)
             documents.append(
                 DocumentRecord(
@@ -161,7 +186,7 @@ def run(
                     relative_path=rel,
                     supplier_dir=supplier_dir,
                     category=category,  # type: ignore[arg-type]
-                    bid_subtype=_classify_bid_document(path, media) if category == "bid" else "unknown",
+                    bid_subtype=_classify_bid_document(path, media, first_page_text) if category == "bid" else "unknown",
                     media_type=media,
                     size_bytes=size,
                     page_count=page_count,
@@ -181,7 +206,14 @@ def run(
                 ExtractionAnomaly(anomaly="mapping_mismatch", detail=f"supplier_directory_mapping 中的目录“{mapped}”不存在于 bids/")
             )
     if not supplier_dirs:
-        anomalies.append(ExtractionAnomaly(anomaly="no_supplier_directories", detail="bids/ 下未发现供应商目录"))
+        flat_upload = any(
+            d.category == "bid" and d.supplier_dir is None for d in documents
+        )
+        anomalies.append(ExtractionAnomaly(
+            anomaly="awaiting_supplier_grouping" if flat_upload else "no_supplier_directories",
+            detail=("标书以平铺/上传暂存区提供，等待正文/OCR 证据归组"
+                    if flat_upload else "bids/ 下未发现供应商目录"),
+        ))
 
     # 外部证据子目录 → source_id 的映射只做提示性检查
     ext_base = project_dir / "external-evidence"

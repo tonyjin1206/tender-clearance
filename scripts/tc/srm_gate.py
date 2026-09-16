@@ -5,7 +5,7 @@ from __future__ import annotations
 from .models import EntitiesFile, ExternalEvidenceFile
 
 
-REPORT_ALLOWED_SRM_STATUSES = {"match", "no_match_verified", "no_result"}
+REPORT_ALLOWED_SRM_STATUSES = {"match", "no_match_verified", "no_result", "needs_manual_review"}
 LIVE_QUERY_MODES = {"official_api", "browser_session"}
 
 
@@ -16,9 +16,10 @@ class SrmReportGateError(ValueError):
 def validate_srm_report_gate(entities: EntitiesFile, external: ExternalEvidenceFile) -> None:
     """要求每个投标人都有本次运行的已认证 SRM 查询。
 
-    ``no_result`` / ``no_match_verified`` 表示登录及查询已完成但没有可用记录，
-    按业务要求允许出报告；``not_queried``、``needs_manual_review``、``blocked``、
-    ``failed`` 或手工导入均不能替代本次 SRM 登录查询。
+    ``no_result`` / ``no_match_verified`` 表示登录及查询已完成但没有可用记录；
+    ``needs_manual_review`` 仅在本次实时查询确已执行且记录 queried_at 时允许出报告，
+    但必须在报告中保持“待人工复核”。``not_queried``、``blocked``、``failed``
+    或手工导入均不能替代本次 SRM 登录查询。
     """
     by_supplier: dict[str, list] = {}
     for query in external.queries:

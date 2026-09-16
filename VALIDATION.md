@@ -1,6 +1,60 @@
 # 验证记录（VALIDATION）
 
+## 2026-09-16：v0.3.0 OCR 进度可观测性与 Provider 优化
+
+- OCR Provider 默认使用质量优先的 `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`，规整
+  A4 页面默认关闭方向、展平和文本行方向预处理，并保留 PaddleOCR 文本块坐标。
+- 新增 `TC_PROGRESS_V1` 模型过程事件：首次安装每 10 秒发送心跳，OCR 每完成一页发送
+  页级事件；事件默认可折叠，不进入报告、证据或业务输出，不含凭据和 OCR 原文。
+- 真实商务扫描件 19 页复测：19 页均取得文本块坐标，完整质量档耗时 262.4 秒；关键页
+  正确识别供应商名称、项目编号、投标日期、报价 26.2 和税率 6%。
+- 回归验证：121 passed；`compileall` 和 `git diff --check` 通过。
+
 验证日期：2026-09-11　环境：macOS / Python 3.12.13 / uv venv
+
+## 2026-09-15：首轮确认与性能可观测性
+
+- 新增 `preflight.py --intake`：不读取 `project.yaml` 或业务文件，先输出评标截止时间、
+  公开联网授权、SRM 授权/运行时凭据和敏感信息展示的四项确认。
+- 新增 `run_pipeline.py`：每阶段在控制台输出墙钟耗时，并写入
+  `output/interim/performance.json`；实时查询另写 `query-timings.json`，记录供应商 ID、
+  渠道、状态和耗时，不记录账号、密码、Cookie 或查询页面内容。
+- 实时查询默认总预算为 300 秒。预算耗尽或进程超时会停止流水线；未开始项保留
+  `not_queried`，正式 SRM 报告门禁仍会阻止把它写成无风险。
+- SRM 正式默认每家供应商使用独立浏览器会话，避免同一门户切换企业时残留画像 iframe；
+  `SRM_BROWSER_REUSE_SESSION=1` 仅作为性能实验开关。验证码人工接管默认立即返回 `manual`，
+  不再无提示等待 180 秒；`query_sources.py --supplier-id SUP-*` 支持只重试失败主体。
+
+干净 Core 虚拟环境（新建 venv、仅安装 `requirements-core.txt`）与无 `output/` 的虚构项目副本：
+
+| 检查 | 结果 |
+|---|---|
+| `preflight.py --intake` | 0.12s |
+| `run_pipeline.py --offline-draft` | **1.00s**（盘点 0.193s、一次性解析 0.198s、匹配 0.110s、外部导入 0.099s、规则 0.110s、报告 0.290s） |
+| 完整测试 | **101 passed**，5 个第三方依赖弃用警告 |
+| Skill 结构 | `quick_validate.py` 通过 |
+| 锁文件 | `uv lock --check` 通过 |
+
+上述是小型虚构夹具的本机结果，文件系统可能已热缓存；不把它宣称为真实标书或实时 SRM 的
+生产 SLO。实时网站与 OCR Provider 未在本次性能回归中连接。
+
+## 2026-09-15：真实附件平铺上传验证
+
+在独立临时项目中将 `/Users/moc/Desktop/投标文件/` 的 9 份 PDF 平铺放入
+`bids/inbox/`，不建立供应商目录，不把文件名作为归组依据。验证结果：
+
+- 盘点识别为 3 份商务、3 份技术、3 份投标一览/报价；内容提取生成 30 个页级 OCR 任务，
+  包含纯扫描页以及“文字层 + 营业执照图片”页。
+- 本机 macOS Vision OCR 导入后，自动证据识别出 3 家供应商；技术标按商务主体回归归组，
+  不把招标人“富奥汽车零部件股份有限公司”建成供应商。
+- 用户确认的三组三件套通过 `supplier-group-confirmations.json` 显式记录；`报价.pdf`
+  的文字层与第三组归属冲突被保留为人工复核项，没有静默合并。
+- 本地阶段性能：完整离线编排 **1.383 秒**；其中盘点 0.194 秒、一次性解析 0.152 秒、
+  归组 0.103 秒、主体匹配 0.511 秒、规则 0.109 秒、报告渲染 0.209 秒。
+- 公开查询 3 家均返回 `no_match_verified`；一次完整成功的 SRM 查询耗时
+  **155.201 秒**：山清 `match` 28 条、鑫誉 `match` 55 条、赢天 `match` 36 条。
+  随后只定向重试山清和鑫誉耗时 102.995 秒，结果去重后仍为 28/55/36 条；最终正式门禁
+  `validate_project.py --stage final` 通过。
 
 ## 本次 V2 改造
 
@@ -20,8 +74,9 @@
   生产 OCR Provider 不进入 Core；PaddleOCR/ONNX Runtime 仅作为独立 Provider Profile。
 - 文档、OCR 和外部资料分别写入 `output/cache/`；报告档位为 `report/review/workpaper`，
   根目录保留验收基准，档位副本写入 `output/exports/<profile>/`。
-- `preflight.py` 只读汇总文件名分类、技术标跳过策略、缺失依赖、OCR/SRM 确认项；阶段
-  运行不再中途提问。技术标正文/表格/媒体/OCR 按文件名短路，属性仅走轻量路径。
+- `preflight.py` 只读汇总文件分类、平铺归组策略、缺失依赖、OCR/SRM 确认项；阶段
+  运行不再中途提问。技术标正文/表格/媒体按文件类型短路，仅保留首页可见文本证据；扫描页不发起 OCR；
+  商务页中的证照图片仍生成页级 OCR 任务。
 - 文档缓存按源 SHA 复用解析快照，但阶段结果同时校验文档身份、分类、脱敏/Provider
   配置；同内容副本不会串用证据路径。
 - 默认 `run_all()` 不调用 `query_sources.py`；外部刷新必须显式执行，报告重跑只消费缓存。
@@ -33,8 +88,8 @@
 |---|---|---|
 | Skill frontmatter/结构 | `quick_validate.py .` | ✅ Skill is valid! |
 | Schema 生成 | `.venv/bin/python scripts/gen_schemas.py` | ✅ 13 个 Schema 生成 |
-| 单元与场景测试 | `.venv/bin/python -m pytest tests -q` | ✅ **94 passed**，5 个环境弃用警告 |
-| 运行前预检 | `.venv/bin/python scripts/preflight.py tests/fixtures/project-alpha --profile report` | ✅ 只读输出 23 个输入文件；技术标 4 个按文件名跳过；无缺失 Core 依赖 |
+| 单元与场景测试 | `.venv/bin/python -m pytest tests -q` | ✅ **101 passed**，5 个环境弃用警告 |
+| 运行前预检 | `.venv/bin/python scripts/preflight.py tests/fixtures/project-alpha --profile report` | ✅ 只读输出 23 个输入文件；技术标正文短路并保留归组边界；无缺失 Core 依赖 |
 | 锁文件一致性 | `uv lock --check` | ✅ 41 个包，已移除未使用的 `pypdf` |
 | 干净虚构夹具完整流水线 | `run_all(require_srm=False)` + `/usr/bin/time -p` | ✅ 冷运行 1.15s、热运行 0.99s；仅代表当前 macOS 夹具，不宣称生产 p95 |
 | Core 依赖静态检查 | 检查基础 dependencies / `requirements-core.txt` | ✅ 无 `paddle*`、OpenCV、Playwright、requests |

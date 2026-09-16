@@ -78,7 +78,7 @@ def salt_fingerprint(salt: str) -> str:
     return hashlib.sha256(salt.encode("utf-8")).hexdigest()[:8]
 
 
-DOCUMENT_CACHE_VERSION = "document-cache.v2"
+DOCUMENT_CACHE_VERSION = "document-cache.v3"
 
 
 def document_cache_key(doc: Any, cfg: Any, stage: str) -> str:
