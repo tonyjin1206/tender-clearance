@@ -156,7 +156,8 @@ def run(
     live_source_set = set(live_sources)
 
     runtime_credentials: dict[str, tuple[str, str]] = {}
-    if "srm" in live_sources:
+    manual_browser_login = os.environ.get("SRM_BROWSER_MANUAL_LOGIN", "") == "1"
+    if "srm" in live_sources and not manual_browser_login:
         try:
             runtime_credentials["srm"] = _collect_srm_credentials(allow_interactive=interactive)
         except ProjectError as exc:
@@ -167,6 +168,12 @@ def run(
     if live_sources:
         adapters = build_adapters({sid: source_configs.get(sid, SourceConfig(source_id=sid, label=sid))
                                    for sid in live_sources}, runtime_credentials=runtime_credentials)
+    if manual_browser_login and "srm" in live_sources:
+        typer.secho(
+            "[SRM] 人工登录模式：即将打开可见浏览器，请在窗口内输入账号、密码并完成验证码；"
+            "程序不会读取、填充或保存凭据。",
+            fg=typer.colors.YELLOW,
+        )
 
     now = datetime.now(timezone.utc)
     query_started = time.perf_counter()

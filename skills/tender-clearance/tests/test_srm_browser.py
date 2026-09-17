@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from tc.srm_browser import (
     BrowserCredentials,
     BrowserQueryCheckpoint,
+    BrowserSessionEvent,
     BrowserLoginResult,
     BrowserSectionResult,
     BrowserSubjectResult,
@@ -220,6 +221,73 @@ def test_branch_candidates_survive_adapter_result_without_becoming_records():
     assert all(record.record_kind != "branch_candidate" for record in result.records)
 
 
+def test_manual_login_does_not_require_or_fill_runtime_credentials():
+    class ManualBrowser(FakeBrowser):
+        def __init__(self):
+            super().__init__()
+            self.manual_waits = 0
+
+        def login(self, username, password):
+            raise AssertionError("人工登录模式不得调用自动填充 login")
+
+        def wait_for_manual_login(self, timeout_s):
+            self.manual_waits += 1
+            assert timeout_s == 17
+            return BrowserLoginResult("authenticated", "人工登录成功")
+
+    driver = ManualBrowser()
+    events: list[BrowserSessionEvent] = []
+    result = SrmBrowserClient(
+        lambda: driver,
+        manual_login=True,
+        manual_login_timeout_s=17,
+        status_callback=events.append,
+    ).query(QuerySubject("S1", "甲公司", None), datetime.now(timezone.utc))
+
+    assert result.status == "match"
+    assert driver.manual_waits == 1
+    assert [event.state for event in events] == ["awaiting_manual_login", "authenticated"]
+    assert "账号" in events[0].message and "凭据" in events[0].message
+
+
+def test_manual_login_timeout_is_manual_review_and_not_no_result():
+    class ManualTimeout(FakeBrowser):
+        def login(self, username, password):
+            raise AssertionError("不得自动填充")
+
+        def wait_for_manual_login(self, timeout_s):
+            return BrowserLoginResult("manual", "人工登录等待超时")
+
+    events: list[BrowserSessionEvent] = []
+    client = SrmBrowserClient(
+        lambda: ManualTimeout(), manual_login=True, status_callback=events.append
+    )
+    result = client.query(QuerySubject("S1", "甲公司", None), datetime.now(timezone.utc))
+
+    assert result.status == "needs_manual_review"
+    assert client.state == "manual_review"
+    assert result.status != "no_result"
+
+
+def test_manual_login_browser_close_reopens_only_once():
+    class ClosedManual(FakeBrowser):
+        def login(self, username, password):
+            raise AssertionError("不得自动填充")
+
+        def wait_for_manual_login(self, timeout_s):
+            return BrowserLoginResult("failed", "浏览器页面已关闭")
+
+    first = ClosedManual()
+    second = ClosedManual()
+    drivers = iter([first, second])
+    result = SrmBrowserClient(
+        lambda: next(drivers), manual_login=True, reopen_attempts=1
+    ).query(QuerySubject("S1", "甲公司", None), datetime.now(timezone.utc))
+
+    assert result.status == "failed"
+    assert first.closed is True and second.closed is True
+
+
 
 # ---- 集成：宿主注册表 → SrmAdapter 浏览器模式优先（与 HTTP 客户端分离） ----
 
@@ -332,3 +400,36 @@ def test_srm_adapter_env_switch_registers_playwright_driver(monkeypatch):
     finally:
         sb.clear_browser_driver()
         monkeypatch.delenv("SRM_BROWSER_DRIVER", raising=False)
+
+
+def test_srm_adapter_manual_login_env_skips_credential_provider(monkeypatch):
+    import os
+    from datetime import datetime, timezone
+
+    from tc import srm_browser as sb
+    from tc.sources import QuerySubject, SrmAdapter
+
+    class ManualDriver(_FakeSrmDriver):
+        def wait_for_manual_login(self, timeout_s):
+            assert timeout_s == 300
+            return sb.BrowserLoginResult(status="authenticated", detail="人工登录成功")
+
+    sb.clear_browser_driver()
+    monkeypatch.setenv("SRM_BROWSER_DRIVER", "playwright")
+    monkeypatch.setenv("SRM_BROWSER_MANUAL_LOGIN", "1")
+    sb.register_browser_driver(
+        factory=ManualDriver,
+        credential_provider=lambda: (_ for _ in ()).throw(
+            AssertionError("人工登录模式不得请求凭据")
+        ),
+    )
+    try:
+        result = SrmAdapter().query(
+            QuerySubject("S1", "虚构供应商甲有限公司", "91350100M000100Y43"),
+            datetime.now(timezone.utc),
+        )
+        assert result.status == "match"
+    finally:
+        sb.clear_browser_driver()
+        monkeypatch.delenv("SRM_BROWSER_DRIVER", raising=False)
+        monkeypatch.delenv("SRM_BROWSER_MANUAL_LOGIN", raising=False)

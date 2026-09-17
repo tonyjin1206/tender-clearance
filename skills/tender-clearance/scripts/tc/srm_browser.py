@@ -49,7 +49,7 @@ SubjectConfirmation = Literal["confirmed", "candidate", "unconfirmed"]
 SectionName = Literal["basic", "shareholders", "branches", "personnel", "judicial", "operating"]
 BrowserSessionState = Literal[
     "new", "opening", "awaiting_login", "authenticated", "querying",
-    "manual_review", "blocked", "failed", "closed",
+    "awaiting_manual_login", "reopening", "manual_review", "blocked", "failed", "closed",
 ]
 
 
@@ -57,6 +57,15 @@ BrowserSessionState = Literal[
 class BrowserLoginResult:
     status: BrowserLoginStatus
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class BrowserSessionEvent:
+    """脱敏的宿主状态事件；不携带账号、密码、Cookie、Token 或页面原文。"""
+
+    state: BrowserSessionState
+    message: str
+    attempt: int = 0
 
 
 @dataclass
@@ -141,6 +150,8 @@ class SrmBrowserDriver(Protocol):
 
     def login(self, username: str, password: str) -> BrowserLoginResult: ...
 
+    def wait_for_manual_login(self, timeout_s: int) -> BrowserLoginResult: ...
+
     def search_subject(self, subject: QuerySubject) -> BrowserSubjectResult: ...
 
     def read_section(self, section: SectionName) -> BrowserSectionResult: ...
@@ -195,17 +206,25 @@ class SrmBrowserClient:
         portal_url: str = PORTAL_URL,
         keep_session: bool = False,
         reopen_attempts: int = 1,
+        manual_login: bool = False,
+        manual_login_timeout_s: int = 300,
+        status_callback: Callable[[BrowserSessionEvent], None] | None = None,
     ) -> None:
         if credentials is not None and credential_provider is not None:
             raise ValueError("credentials 与 credential_provider 只能提供一个")
+        if manual_login and (credentials is not None or credential_provider is not None):
+            raise ValueError("manual_login 模式不得接收或保存运行时凭据")
         self._driver_factory = driver_factory
-        self._credentials = credentials
-        self._credential_provider = credential_provider
+        self._credentials = None if manual_login else credentials
+        self._credential_provider = None if manual_login else credential_provider
         self.portal_url = portal_url
         # keep_session=True：多次 query 间复用已登录的浏览器会话（流水线批量查询，
         # 避免逐供应商反复登录触发风控）；凭据仍在首次 query 后清空，会话靠 Cookie。
         self._keep_session = keep_session
         self._reopen_attempts = max(0, int(reopen_attempts))
+        self._manual_login = bool(manual_login)
+        self._manual_login_timeout_s = max(1, int(manual_login_timeout_s))
+        self._status_callback = status_callback
         self._driver: SrmBrowserDriver | None = None
         self._session_authenticated = False
         self._state: BrowserSessionState = "new"
@@ -227,19 +246,20 @@ class SrmBrowserClient:
         # 降低触发风控验证码的概率）。会话失效时结果会如实标注，重跑即重新登录。
         if self._keep_session and self._session_authenticated and self._driver is not None:
             self._state = "querying"
-            recovery_creds = self._take_credentials()
+            recovery_creds = BrowserCredentials() if self._manual_login else self._take_credentials()
             try:
                 result = self._query_with_recovery(
                     self._driver, subject, as_of,
                     recovery_creds if recovery_creds.username and recovery_creds.password else None,
+                    manual=self._manual_login,
                 )
                 self._invalidate_after_session_failure(result)
                 return result
             finally:
                 recovery_creds.clear()
 
-        creds = self._take_credentials()
-        if not creds.username or not creds.password:
+        creds = BrowserCredentials() if self._manual_login else self._take_credentials()
+        if not self._manual_login and (not creds.username or not creds.password):
             creds.clear()
             return AdapterResult(
                 status="needs_manual_review",
@@ -256,8 +276,24 @@ class SrmBrowserClient:
                     self._state = "opening"
                     driver = self._driver_factory()
                     driver.open(self.portal_url)
-                    self._state = "awaiting_login"
-                    login = driver.login(creds.username, creds.password)
+                    if self._manual_login:
+                        self._state = "awaiting_manual_login"
+                        self._emit(
+                            "awaiting_manual_login",
+                            "请在已打开的 SRM 浏览器窗口人工输入账号、密码并完成验证码；程序不会读取或填充凭据",
+                            attempt,
+                        )
+                        login = self._wait_for_manual_login(driver)
+                    else:
+                        self._state = "awaiting_login"
+                        login = driver.login(creds.username, creds.password)
+                    if login.status == "failed" and self._is_reopenable_detail(login.detail) \
+                            and attempt < self._reopen_attempts:
+                        self._state = "reopening"
+                        self._emit("reopening", "浏览器窗口已关闭，正在有限次重开并重新等待登录", attempt + 1)
+                        self._close_driver(driver)
+                        driver = None
+                        continue
                     break
                 except Exception as exc:  # noqa: BLE001
                     if driver is not None:
@@ -274,6 +310,7 @@ class SrmBrowserClient:
                 self._state = {
                     "blocked": "blocked", "failed": "failed", "manual": "manual_review",
                 }[login.status]
+                self._emit(self._state, self._safe_detail(login.detail or "SRM 浏览器登录未完成"))
                 return AdapterResult(
                     status={
                         "blocked": "blocked",
@@ -288,10 +325,13 @@ class SrmBrowserClient:
                 self._driver = driver
                 self._session_authenticated = True
                 self._state = "querying"
+                self._emit("authenticated", "SRM 人工登录成功，开始主体查询")
                 result = self._query_with_recovery(driver, subject, as_of, creds)
                 self._invalidate_after_session_failure(result)
                 return result
             self._state = "querying"
+            if self._manual_login:
+                self._emit("authenticated", "SRM 人工登录成功，开始主体查询")
             return self._query_with_recovery(driver, subject, as_of, creds)
         except Exception as exc:  # noqa: BLE001
             return AdapterResult(
@@ -349,11 +389,36 @@ class SrmBrowserClient:
             self._session_authenticated = False
             self._state = "blocked" if result.status == "blocked" else "failed"
 
+    def _emit(self, state: BrowserSessionState, message: str, attempt: int = 0) -> None:
+        self._state = state
+        if self._status_callback is not None:
+            try:
+                self._status_callback(BrowserSessionEvent(
+                    state=state, message=self._safe_detail(message), attempt=attempt,
+                ))
+            except Exception:
+                # 状态展示回调不能影响 SRM 查询本身。
+                pass
+
+    def _wait_for_manual_login(self, driver: SrmBrowserDriver) -> BrowserLoginResult:
+        wait = getattr(driver, "wait_for_manual_login", None)
+        if not callable(wait):
+            return BrowserLoginResult(
+                status="failed",
+                detail="人工登录模式要求浏览器驱动提供 wait_for_manual_login；未填充任何凭据",
+            )
+        return wait(self._manual_login_timeout_s)
+
     @staticmethod
     def _is_reopenable(exc: Exception) -> bool:
-        text = str(exc).lower()
+        return SrmBrowserClient._is_reopenable_detail(str(exc))
+
+    @staticmethod
+    def _is_reopenable_detail(detail: str | None) -> bool:
+        text = str(detail or "").lower()
         return any(marker in text for marker in (
             "closed", "disconnected", "target page", "browser has been closed",
+            "关闭", "断开",
         ))
 
     @staticmethod
@@ -369,12 +434,13 @@ class SrmBrowserClient:
         subject: QuerySubject,
         as_of: datetime,
         credentials: BrowserCredentials | None,
+        manual: bool = False,
     ) -> AdapterResult:
         """对浏览器误关做一次重开；业务阻断和主体冲突不重试。"""
         try:
             return self._query_with_driver(driver, subject, as_of)
         except Exception as exc:  # noqa: BLE001
-            if not credentials or not self._is_reopenable(exc) or self._reopen_attempts <= 0:
+            if (not manual and not credentials) or not self._is_reopenable(exc) or self._reopen_attempts <= 0:
                 return AdapterResult(
                     status="failed",
                     detail=f"SRM 浏览器主体查询失败：{type(exc).__name__}",
@@ -386,8 +452,12 @@ class SrmBrowserClient:
                 reopened = self._driver_factory()
                 self._state = "opening"
                 reopened.open(self.portal_url)
-                self._state = "awaiting_login"
-                login = reopened.login(credentials.username, credentials.password)
+                self._state = "awaiting_manual_login" if manual else "awaiting_login"
+                if manual:
+                    self._emit("awaiting_manual_login", "浏览器已重开，请人工完成 SRM 登录", 1)
+                    login = self._wait_for_manual_login(reopened)
+                else:
+                    login = reopened.login(credentials.username, credentials.password)  # type: ignore[union-attr]
                 if login.status != "authenticated":
                     self._state = {
                         "blocked": "blocked", "failed": "failed", "manual": "manual_review",
@@ -397,6 +467,8 @@ class SrmBrowserClient:
                         detail=self._safe_detail(login.detail or "SRM 浏览器重开后登录未完成"),
                         request_mode="browser_session",
                     )
+                if manual:
+                    self._emit("authenticated", "SRM 人工登录成功，继续主体查询", 1)
                 self._state = "querying"
                 if self._keep_session:
                     self._driver = reopened

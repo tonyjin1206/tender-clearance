@@ -399,14 +399,18 @@ class SrmAdapter:
 
             # SRM 默认走真实浏览器会话，固定从主页“查企业”读取可见信息；
             # 仅显式设置 SRM_BROWSER_DRIVER=api/http 才回退到旧 HTTP/token 通道。
-            # 默认无头后台运行；SRM_BROWSER_HEADED=1 为人工接管验证码的可选模式。
+            # 默认无头后台运行；SRM_BROWSER_HEADED=1 为验证码接管模式。
+            # SRM_BROWSER_MANUAL_LOGIN=1 时开启可见浏览器人工登录，不读取或填充凭据。
+            manual_login = os.environ.get("SRM_BROWSER_MANUAL_LOGIN", "") == "1"
             if os.environ.get("SRM_BROWSER_DRIVER", "playwright").lower() == "playwright":
                 # 宿主已经注入的驱动（桌面浏览器桥接、测试替身等）优先；
                 # 只有没有注册驱动时才自动装配本地 Playwright，避免覆盖注入状态。
                 if _srm_browser.get_browser_driver_factory() is None:
                     from .srm_playwright_driver import ensure_registered
 
-                    ensure_registered(headless=os.environ.get("SRM_BROWSER_HEADED", "") != "1")
+                    ensure_registered(headless=(
+                        False if manual_login else os.environ.get("SRM_BROWSER_HEADED", "") != "1"
+                    ))
 
             factory = _srm_browser.get_browser_driver_factory()
             if factory is not None:
@@ -415,7 +419,7 @@ class SrmAdapter:
                 reuse_session = os.environ.get("SRM_BROWSER_REUSE_SESSION", "1") != "0"
                 self._client = _srm_browser.SrmBrowserClient(
                     driver_factory=factory,
-                    credential_provider=(
+                    credential_provider=None if manual_login else (
                         _srm_browser.get_browser_credential_provider()
                         or (lambda: _srm_browser.BrowserCredentials(
                             username=(self._runtime_credentials or (os.environ.get("SRM_USER", ""), ""))[0],
@@ -423,6 +427,10 @@ class SrmAdapter:
                         ))
                     ),
                     keep_session=reuse_session,
+                    manual_login=manual_login,
+                    manual_login_timeout_s=int(os.environ.get(
+                        "SRM_MANUAL_LOGIN_TIMEOUT_SECONDS", "300"
+                    )),
                 )
             else:
                 cfg = load_srm_config()

@@ -320,6 +320,26 @@ class PlaywrightSrmDriver:
             cas.page.wait_for_timeout(1000)
         return BrowserLoginResult(status="manual", detail="登录未完成（可能触发验证码或网络缓慢），需人工接管")
 
+    def wait_for_manual_login(self, timeout_s: int) -> BrowserLoginResult:
+        """等待用户在可见浏览器中完成登录；绝不读取或填充账号密码。"""
+        if self._page is None:
+            return BrowserLoginResult(status="failed", detail="浏览器页面未创建")
+        deadline = time.monotonic() + max(1, int(timeout_s))
+        while time.monotonic() < deadline:
+            try:
+                if self._logged_in_hint():
+                    return BrowserLoginResult(status="authenticated", detail="检测到人工登录成功")
+                # 页面/上下文被用户误关时，交给客户端执行一次有限重开。
+                if self._page.is_closed():
+                    return BrowserLoginResult(status="failed", detail="浏览器页面已关闭")
+                self._page.wait_for_timeout(500)
+            except Exception as exc:  # noqa: BLE001
+                return BrowserLoginResult(status="failed", detail=f"浏览器已关闭或断开：{type(exc).__name__}")
+        return BrowserLoginResult(
+            status="manual",
+            detail=f"人工登录等待超时（{max(1, int(timeout_s))} 秒）；未继续执行主体查询",
+        )
+
     # ------------------------------------------------------------ 主体检索与核对
     # 以下导航顺序基于已观察到的 SRM 主页：
     # - 主页最近应用中有“查企业”，直接进入企业搜索，而不是供应商档案；
@@ -1160,11 +1180,20 @@ def ensure_registered(headless: bool = True) -> None:
     )
 
 
-def query_once(keyword: str, username: str, password: str, headless: bool = False) -> AdapterResult:
-    """单次查询：登录 + 主体核对 + 三类页面读取；结束后清空凭据并关闭浏览器。"""
-    creds = BrowserCredentials(username=username, password=password)
-    client = SrmBrowserClient(driver_factory=lambda: PlaywrightSrmDriver(headless=headless),
-                              credentials=creds)
+def query_once(
+    keyword: str,
+    username: str = "",
+    password: str = "",
+    headless: bool = False,
+    manual_login: bool = False,
+) -> AdapterResult:
+    """单次查询；manual_login 模式由用户在可见浏览器内完成登录。"""
+    creds = None if manual_login else BrowserCredentials(username=username, password=password)
+    client = SrmBrowserClient(
+        driver_factory=lambda: PlaywrightSrmDriver(headless=False if manual_login else headless),
+        credentials=creds,
+        manual_login=manual_login,
+    )
     uscc_m = re.search(r"[0-9A-HJ-NPQRTUWXY]{18}", keyword, re.I)
     subject = QuerySubject(
         supplier_id="runtime-query",
