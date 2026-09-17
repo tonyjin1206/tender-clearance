@@ -6,6 +6,8 @@ from tc.srm_playwright_driver import (
     PlaywrightSrmDriver,
     _company_lookup_query,
     _normalize_company_candidates,
+    _branch_candidates,
+    _clean_company_name,
     _select_company_candidate,
 )
 from tc.sources import QuerySubject
@@ -32,6 +34,19 @@ def test_company_lookup_query_removes_bid_document_stamp_suffix_only():
     assert _company_lookup_query(QuerySubject("S1", "长春市赢天环保科技有限公司(公章)", None)) == "长春市赢天环保科技有限公司"
     assert _company_lookup_query(QuerySubject("S1", "甲 公司", None)) == "甲公司"
     assert _company_lookup_query(QuerySubject("S1", "长春市赢天环保科技有限公司(公章)", "91310000MA00000002")) == "91310000MA00000002"
+
+
+def test_company_name_cleanup_preserves_branch_suffix():
+    assert _clean_company_name("甲 公司（公章）") == "甲公司"
+    assert _clean_company_name("甲公司分公司（公章）") == "甲公司分公司"
+
+
+def test_company_candidates_do_not_guess_name_from_unlabelled_fields():
+    rows = _normalize_company_candidates(
+        [{"法定代表人": "张三", "注册地址": "北京市", "统一社会信用代码": "91310000MA00000001"}],
+        "",
+    )
+    assert rows == [{"name": "", "uscc": "91310000MA00000001"}]
 
 
 def test_company_candidates_do_not_count_unrelated_visible_tables():
@@ -63,6 +78,31 @@ def test_company_candidate_keeps_multiple_exact_subjects_manual():
     ]
 
     assert _select_company_candidate(rows, "甲公司") is None
+
+
+def test_company_candidate_keeps_name_code_conflict_manual_even_with_matching_code():
+    rows = [
+        {"name": "甲公司", "uscc": "91310000MA00000001"},
+        {"name": "甲公司", "uscc": "91310000MA00000002"},
+    ]
+
+    assert _select_company_candidate(rows, "甲公司", "91310000MA00000001") is None
+
+
+def test_branch_cards_are_candidates_and_not_the_selected_duplicate():
+    rows = [
+        {"name": "甲公司", "uscc": "91310000MA00000001"},
+        {"name": "甲公司上海分公司", "uscc": "91310000MA00000002"},
+    ]
+    selected = _select_company_candidate(rows, "甲公司")
+    branches = _branch_candidates(rows, "甲公司", selected)
+
+    assert selected == rows[0]
+    assert branches == [{
+        "name": "甲公司上海分公司",
+        "uscc": "91310000MA00000002",
+        "relation": "branch_candidate",
+    }]
 
 
 def test_subject_search_default_route_is_home_company_lookup():
@@ -159,6 +199,43 @@ def test_subject_search_clicks_exact_company_when_branches_are_also_returned():
     assert result.confirmation == "candidate"
     assert calls == [rows[0]]
     assert "精确命中" in (result.detail or "")
+
+
+def test_subject_search_name_conflict_requires_manual_review():
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    driver = PlaywrightSrmDriver.__new__(PlaywrightSrmDriver)
+    driver._page = Page()
+    driver._active_profile_frame = None
+    driver._company_search_open = False
+    driver._ensure_company_search_open = lambda: True
+    driver._fill_company_search = lambda _value: True
+    driver._company_result_rows = lambda _query: [{
+        "name": "甲公司", "uscc": "91310000MA00000001",
+    }]
+    driver._click_company_result = lambda _row: True
+    driver._click_anywhere = lambda *args, **kwargs: True
+    driver._wait_profile_ready = lambda _query: object()
+    driver._read_identity = lambda _frame: ("乙公司", "91310000MA00000001")
+
+    result = driver.search_subject(QuerySubject("S1", "甲公司", "91310000MA00000001"))
+
+    assert result.confirmation == "unconfirmed"
+    assert "名称与查询主体冲突" in (result.detail or "")
+
+
+def test_profile_identity_must_be_stable_before_reading():
+    class Page:
+        def wait_for_timeout(self, _milliseconds):
+            pass
+
+    driver = PlaywrightSrmDriver.__new__(PlaywrightSrmDriver)
+    driver._read_identity = lambda _frame: ("甲公司", "91310000MA00000001")
+    frame = type("Frame", (), {"page": Page()})()
+
+    assert driver._wait_for_stable_identity(frame, "91310000MA00000001", 0) is True
 
 
 def test_read_basic_extracts_legal_identity_fields_from_profile():

@@ -105,6 +105,16 @@
           ],
           "default": null,
           "title": "Adapter Version"
+        },
+        "branch_candidates": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Branch Candidates",
+          "type": "array"
         }
       },
       "required": [

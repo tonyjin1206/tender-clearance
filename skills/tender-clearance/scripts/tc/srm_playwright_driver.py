@@ -70,14 +70,24 @@ def _norm(v: str | None) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(v)))
 
 
+def _clean_company_name(value: str | None) -> str:
+    """清理文书版面噪声，保留完整法定主体名称。
+
+    只移除末尾的“(公章)”标记；“分公司”“支公司”等均是主体组成，禁止
+    用通用后缀清理把它们抹掉。
+    """
+    if not value:
+        return ""
+    name = unicodedata.normalize("NFKC", str(value)).strip()
+    name = re.sub(r"\s*[（(]\s*公章\s*[）)]\s*$", "", name)
+    return re.sub(r"\s+", "", name).strip()
+
+
 def _company_lookup_query(subject: QuerySubject) -> str:
     """生成 SRM 查企业输入值；保留原主体，去除投标文件盖章后缀。"""
     if subject.uscc:
         return subject.uscc
-    name = unicodedata.normalize("NFKC", str(subject.name or ""))
-    # 投标文件常把“(公章)”作为版面标记，SRM 企业库名称不含该标记。
-    name = re.sub(r"\s*[（(]\s*公章\s*[）)]\s*$", "", name)
-    return re.sub(r"\s+", "", name)
+    return _clean_company_name(subject.name)
 
 
 _COMPANY_NAME_KEYS = (
@@ -110,26 +120,17 @@ def _normalize_company_candidates(raw_rows: list[dict[str, Any]], query: str = "
     result: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     query_norm = _norm(query)
-    ignored = {"", "-", "--", "暂无", "无", "查看", "详情", "操作"}
     for raw in raw_rows:
         if not isinstance(raw, dict):
             continue
         uscc = _first_record_value(raw, _COMPANY_USCC_KEYS)
         uscc_match = _USCC_RE.search(uscc)
         uscc = uscc_match.group(0).upper() if uscc_match else ""
-        name = _first_record_value(raw, _COMPANY_NAME_KEYS)
-        values = [str(v or "").strip() for v in raw.values()]
-        values = [v for v in values if v not in ignored]
-        if not name or _USCC_RE.fullmatch(name):
-            plausible = [
-                v for v in values
-                if not _USCC_RE.fullmatch(v)
-                and not re.fullmatch(r"[\d\s.,:/-]+", v)
-            ]
-            if query_norm:
-                name = next((v for v in plausible if query_norm in _norm(v)), "")
-            if not name and plausible:
-                name = plausible[0]
+        name = _clean_company_name(_first_record_value(raw, _COMPANY_NAME_KEYS))
+        # 没有明确企业名称列时不从法人、地址、操作列猜公司名；有信用代码的
+        # 行仍可用于按 USCC 精确选择，但不能伪造一个完整名称。
+        if _USCC_RE.fullmatch(name):
+            name = ""
         if not name and not uscc:
             continue
         if query_norm and len(query_norm) >= 3:
@@ -153,18 +154,53 @@ def _select_company_candidate(
     查询名称的卡片，就不应因为其它“名称+分公司”的卡片而整体判为歧义；
     但多个完全同名主体或多个相同信用代码仍必须人工复核。
     """
-    query_norm = _norm(query)
+    query_norm = _norm(_clean_company_name(query))
     if subject_uscc:
         uscc_norm = subject_uscc.upper()
         exact_uscc = [r for r in rows if str(r.get("uscc") or "").upper() == uscc_norm]
-        if len(exact_uscc) == 1:
-            return exact_uscc[0]
-        if len(exact_uscc) > 1:
+        if len(exact_uscc) != 1:
             return None
-    exact_name = [r for r in rows if _norm(r.get("name")) == query_norm]
+        # 两个主体键同时提供时，USCC 不能掩盖同名冲突；必须是同一条精确
+        # 结果。这样“名称相同但代码不同”会转人工，而不是静默选中一条。
+        if query_norm:
+            exact_name = [
+                r for r in rows
+                if _norm(_clean_company_name(r.get("name"))) == query_norm
+            ]
+            if len(exact_name) != 1 or exact_name[0] != exact_uscc[0]:
+                return None
+        return exact_uscc[0]
+    exact_name = [r for r in rows if _norm(_clean_company_name(r.get("name"))) == query_norm]
     if len(exact_name) == 1:
         return exact_name[0]
     return None
+
+
+def _is_branch_name(name: str | None) -> bool:
+    return bool(re.search(r"(?:分公司|支公司)$", _clean_company_name(name)))
+
+
+def _branch_candidates(
+    rows: list[dict[str, str]], query: str, selected: dict[str, str] | None,
+) -> list[dict[str, str]]:
+    """识别与精确主体同名族的分公司，仅作为 branch_candidate 线索。"""
+    query_norm = _norm(_clean_company_name(query))
+    selected_key = (
+        _norm(_clean_company_name(selected.get("name"))) if selected else "",
+        str(selected.get("uscc") or "").upper() if selected else "",
+    )
+    out: list[dict[str, str]] = []
+    for row in rows:
+        name = _clean_company_name(row.get("name"))
+        code = str(row.get("uscc") or "").upper()
+        if not _is_branch_name(name):
+            continue
+        if selected and (_norm(name), code) == selected_key:
+            continue
+        # 只有明确包含查询主体全名的分公司才建立关系，不把相似名称自动归属。
+        if query_norm and query_norm in _norm(name):
+            out.append({"name": name, "uscc": code, "relation": "branch_candidate"})
+    return out
 
 
 class PlaywrightSrmDriver:
@@ -174,10 +210,11 @@ class PlaywrightSrmDriver:
     version = "srm-browser-playwright/0.1.0"
 
     def __init__(self, headless: bool = False, timeout_ms: int = 45000,
-                 manual_takeover_wait_s: int = 0) -> None:
+                 manual_takeover_wait_s: int = 0, stable_wait_ms: int = 1200) -> None:
         self._headless = headless
         self._timeout = timeout_ms
         self._takeover_wait = manual_takeover_wait_s
+        self._stable_wait_ms = max(0, int(stable_wait_ms))
         self._pw = None
         self._browser = None
         self._context = None
@@ -293,6 +330,9 @@ class PlaywrightSrmDriver:
     def search_subject(self, subject: QuerySubject) -> BrowserSubjectResult:
         """主页 → 查企业 → 搜索框 → 唯一命中 → 企业详情/画像主体核对。"""
         query = _company_lookup_query(subject)
+        # 查询框优先使用 USCC，但主体核对仍必须保留用户提供的完整名称；
+        # 否则会把信用代码误当作名称键，漏掉名称/代码冲突。
+        name_query = _clean_company_name(subject.name) or query
 
         # 批量查询中，上一家供应商的画像 iframe/页签可能仍覆盖在查企业
         # 搜索页上。轻量刷新当前已认证页面，保留 Cookie 但清掉旧画像，
@@ -338,11 +378,12 @@ class PlaywrightSrmDriver:
             return BrowserSubjectResult(
                 None, None, "unconfirmed",
                 detail="『查企业』查询结果为 0 条（页面结构已存 /tmp/srm-nav-debug-company-result.json 供诊断）")
-        selected = _select_company_candidate(rows, query, subject.uscc)
+        selected = _select_company_candidate(rows, name_query, subject.uscc)
         if selected is None:
             return BrowserSubjectResult(
                 None, None, "unconfirmed",
                 detail=f"『查企业』命中 {len(rows)} 条企业，未找到唯一精确主体；需人工确认企业")
+        branch_candidates = _branch_candidates(rows, name_query, selected)
 
         # 精确命中：点击企业结果 → 企业详情/画像 → 等待画像 iframe。
         self._active_profile_frame = None
@@ -360,19 +401,37 @@ class PlaywrightSrmDriver:
         self._active_profile_frame = pf
 
         name, uscc = self._read_identity(pf)
-        if uscc and subject.uscc and uscc == subject.uscc:
+        expected_name = _clean_company_name(subject.name)
+        expected_uscc = str(subject.uscc or "").upper()
+        actual_name = _clean_company_name(name)
+        # 有两个主体键时必须同时一致；只一致一个键也属于冲突，不能自动
+        # match。名称查询没有 USCC 时只能是 candidate，不能升级为 confirmed。
+        if expected_uscc and uscc and uscc.upper() != expected_uscc:
+            return BrowserSubjectResult(
+                name, uscc, "unconfirmed", branch_candidates=branch_candidates,
+                profile_ref=f"企业画像（名称={name}，信用代码={uscc}）",
+                detail="企业画像统一社会信用代码与查询主体冲突，需人工复核")
+        if expected_name and actual_name and actual_name != _clean_company_name(expected_name):
+            return BrowserSubjectResult(
+                name, uscc, "unconfirmed", branch_candidates=branch_candidates,
+                profile_ref=f"企业画像（名称={name}，信用代码={uscc}）",
+                detail="企业画像企业名称与查询主体冲突，需人工复核")
+        if expected_uscc and uscc and uscc.upper() == expected_uscc and (
+            not expected_name or actual_name == _norm(expected_name)
+        ):
             confirmation: Literal["confirmed", "candidate"] = "confirmed"
-        elif name and _norm(name) == _norm(query) and not subject.uscc:
+        elif expected_name and actual_name == _clean_company_name(expected_name) and not expected_uscc:
             confirmation = "candidate"
         else:
             return BrowserSubjectResult(
-                name, uscc, "unconfirmed",
+                name, uscc, "unconfirmed", branch_candidates=branch_candidates,
                 profile_ref=f"企业画像（名称={name}，信用代码={uscc}）",
                 detail="企业画像主体与查询主体不一致，停止读取风险结果")
         return BrowserSubjectResult(
             name, uscc, confirmation,
             profile_ref=f"企业画像（名称={name}，信用代码={uscc}）",
-            detail=f"入口=主页>查企业；精确命中=名称:{selected.get('name') or '-'}，信用代码:{selected.get('uscc') or '-'}；候选总数={len(rows)}",
+            detail=f"入口=主页>查企业；精确命中=名称:{selected.get('name') or '-'}，信用代码:{selected.get('uscc') or '-'}；候选总数={len(rows)}；分公司候选={len(branch_candidates)}",
+            branch_candidates=branch_candidates,
         )
 
     def _wait_profile_frame(self, timeout_ms: int | None = None):
@@ -448,9 +507,43 @@ class PlaywrightSrmDriver:
                     elif _norm(expected_query) not in compact_text:
                         # 名称查询时先等待当前结果真正替换旧 iframe。
                         continue
-                    return frame
+                    # 画像 iframe 会先渲染旧主体/空骨架，再替换为当前企业。
+                    # 只在主体身份连续稳定一段时间后继续，避免读到上一家结果。
+                    stable = self._wait_for_stable_identity(
+                        frame, expected_query, self._stable_wait_ms
+                    )
+                    if stable:
+                        return frame
             self._page.wait_for_timeout(1000)
         return None
+
+    def _wait_for_stable_identity(
+        self, frame, expected_query: str | None, stable_wait_ms: int,
+    ) -> bool:
+        """确认画像主体身份在短窗口内保持不变。
+
+        稳定键只包含名称/统一社会信用代码，不保存页面全文；名称查询仍要求
+        完整名称精确相等，模糊命中不会因等待结束而升级为自动匹配。
+        """
+        deadline = time.monotonic() + max(0, stable_wait_ms) / 1000
+        previous: tuple[str, str] | None = None
+        while True:
+            name, uscc = self._read_identity(frame)
+            key = (_norm(_clean_company_name(name)), str(uscc or "").upper())
+            if expected_query:
+                if _USCC_RE.fullmatch(expected_query):
+                    if key[1] != expected_query.upper():
+                        return False
+                elif key[0] != _norm(_clean_company_name(expected_query)):
+                    return False
+            if key != ("", "") and key == previous:
+                if time.monotonic() >= deadline:
+                    return True
+            else:
+                previous = key
+            if time.monotonic() >= deadline:
+                return stable_wait_ms == 0 and key != ("", "")
+            frame.page.wait_for_timeout(min(250, max(1, stable_wait_ms)))
 
     def _read_identity(self, pf) -> tuple[str | None, str | None]:
         """兼容标签/值同一行或分行的画像文本，读取主体身份。"""
@@ -1052,11 +1145,13 @@ def ensure_registered(headless: bool = True) -> None:
     """把 Playwright 驱动注册进宿主注册表（供 SrmAdapter / 流水线使用）。"""
     timeout_ms = int(os.environ.get("SRM_BROWSER_TIMEOUT_MS", "45000"))
     manual_wait_s = int(os.environ.get("SRM_MANUAL_TAKEOVER_WAIT_SECONDS", "0"))
+    stable_wait_ms = int(os.environ.get("SRM_BROWSER_STABLE_WAIT_MS", "1200"))
     register_browser_driver(
         factory=lambda: PlaywrightSrmDriver(
             headless=headless,
             timeout_ms=max(1000, timeout_ms),
             manual_takeover_wait_s=max(0, manual_wait_s),
+            stable_wait_ms=max(0, stable_wait_ms),
         ),
         credential_provider=lambda: BrowserCredentials(
             username=os.environ.get("SRM_USER", ""),

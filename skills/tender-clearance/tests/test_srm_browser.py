@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from tc.srm_browser import (
     BrowserCredentials,
+    BrowserQueryCheckpoint,
     BrowserLoginResult,
     BrowserSectionResult,
     BrowserSubjectResult,
@@ -142,6 +143,81 @@ def test_keep_session_logs_in_once_and_closes_explicitly():
     assert drivers[0].closed is False
     client.close()
     assert drivers[0].closed is True
+
+
+def test_query_batch_resumes_from_checkpoint_and_calls_checkpoint_hook():
+    driver = FakeBrowser()
+    checkpoint = BrowserQueryCheckpoint(run_id="run-1", completed={"S1": "match"})
+    snapshots = []
+    client = SrmBrowserClient(
+        lambda: driver,
+        credential_provider=lambda: BrowserCredentials("u", "p"),
+        keep_session=True,
+    )
+
+    results = client.query_batch(
+        [QuerySubject("S1", "甲公司", None), QuerySubject("S2", "乙公司", None)],
+        datetime.now(timezone.utc), checkpoint,
+        on_checkpoint=lambda current: snapshots.append(current.to_dict()),
+    )
+
+    assert [subject.supplier_id for subject, _ in results] == ["S2"]
+    assert checkpoint.completed == {"S1": "match", "S2": "match"}
+    assert snapshots[-1]["schema_version"].endswith("checkpoint.v1")
+    assert "password" not in str(snapshots[-1]).lower()
+    assert driver.closed is True
+
+
+def test_browser_reopens_once_after_accidental_close():
+    class ClosedOnce(FakeBrowser):
+        def search_subject(self, subject):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    first = ClosedOnce()
+    second = FakeBrowser()
+    drivers = iter([first, second])
+    client = SrmBrowserClient(
+        lambda: next(drivers),
+        credentials=BrowserCredentials("u", "p"),
+        reopen_attempts=1,
+    )
+
+    result = client.query(QuerySubject("S1", "甲公司", None), datetime.now(timezone.utc))
+
+    assert result.status == "match"
+    assert first.closed is True and second.closed is True
+
+
+def test_browser_session_state_exposes_manual_login_state():
+    driver = FakeBrowser(login="manual")
+    client = SrmBrowserClient(
+        lambda: driver, credentials=BrowserCredentials("u", "p")
+    )
+
+    result = client.query(QuerySubject("S1", "甲公司", None), datetime.now(timezone.utc))
+
+    assert result.status == "needs_manual_review"
+    assert client.state == "manual_review"
+
+
+def test_branch_candidates_survive_adapter_result_without_becoming_records():
+    class BranchBrowser(FakeBrowser):
+        def search_subject(self, subject):
+            return BrowserSubjectResult(
+                name="甲公司", uscc="91310000MA00000001", confirmation="confirmed",
+                branch_candidates=[{
+                    "name": "甲公司上海分公司",
+                    "uscc": "91310000MA00000002",
+                    "relation": "branch_candidate",
+                }],
+            )
+
+    result = SrmBrowserClient(
+        lambda: BranchBrowser(), credentials=BrowserCredentials("u", "p")
+    ).query(QuerySubject("S1", "甲公司", None), datetime.now(timezone.utc))
+
+    assert result.branch_candidates[0]["relation"] == "branch_candidate"
+    assert all(record.record_kind != "branch_candidate" for record in result.records)
 
 
 

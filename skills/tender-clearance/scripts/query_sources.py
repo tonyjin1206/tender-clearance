@@ -403,6 +403,7 @@ def _adapter_query(sid: str, subject: QuerySubject, result: AdapterResult, now: 
         evidence_ids=ev_ids,
         detail=result.detail,
         adapter_version=version or ADAPTER_VERSION_TAG,
+        branch_candidates=result.branch_candidates,
     )
 
 

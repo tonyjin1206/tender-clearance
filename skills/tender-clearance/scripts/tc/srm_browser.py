@@ -47,6 +47,10 @@ CredentialProvider = Callable[[], BrowserCredentials]
 BrowserLoginStatus = Literal["authenticated", "blocked", "failed", "manual"]
 SubjectConfirmation = Literal["confirmed", "candidate", "unconfirmed"]
 SectionName = Literal["basic", "shareholders", "branches", "personnel", "judicial", "operating"]
+BrowserSessionState = Literal[
+    "new", "opening", "awaiting_login", "authenticated", "querying",
+    "manual_review", "blocked", "failed", "closed",
+]
 
 
 @dataclass
@@ -62,6 +66,50 @@ class BrowserSubjectResult:
     confirmation: SubjectConfirmation
     profile_ref: str | None = None
     detail: str | None = None
+    # 同时出现总公司和“名称+分公司”卡片时，分公司只作为候选线索，不能
+    # 替代精确主体，也不能被下游当作重复主体。
+    branch_candidates: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class BrowserQueryCheckpoint:
+    """一次 SRM 批量查询的可恢复进度，不含页面内容或会话凭据。"""
+
+    run_id: str = ""
+    completed: dict[str, str] = field(default_factory=dict)
+    last_supplier_id: str | None = None
+
+    REUSABLE_STATUSES = frozenset({"match", "no_result", "no_match_verified"})
+
+    def is_complete(self, supplier_id: str | None) -> bool:
+        return bool(supplier_id and self.completed.get(supplier_id) in self.REUSABLE_STATUSES)
+
+    def record(self, supplier_id: str | None, status: str) -> None:
+        if not supplier_id:
+            return
+        self.last_supplier_id = supplier_id
+        if status in self.REUSABLE_STATUSES:
+            self.completed[supplier_id] = status
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "tender-clearance.srm-browser-checkpoint.v1",
+            "run_id": self.run_id,
+            "completed": dict(sorted(self.completed.items())),
+            "last_supplier_id": self.last_supplier_id,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "BrowserQueryCheckpoint":
+        completed = payload.get("completed") or {}
+        if not isinstance(completed, dict):
+            completed = {}
+        return cls(
+            run_id=str(payload.get("run_id") or ""),
+            completed={str(k): str(v) for k, v in completed.items()},
+            last_supplier_id=(str(payload["last_supplier_id"])
+                              if payload.get("last_supplier_id") else None),
+        )
 
 
 @dataclass
@@ -146,6 +194,7 @@ class SrmBrowserClient:
         credential_provider: CredentialProvider | None = None,
         portal_url: str = PORTAL_URL,
         keep_session: bool = False,
+        reopen_attempts: int = 1,
     ) -> None:
         if credentials is not None and credential_provider is not None:
             raise ValueError("credentials 与 credential_provider 只能提供一个")
@@ -156,8 +205,15 @@ class SrmBrowserClient:
         # keep_session=True：多次 query 间复用已登录的浏览器会话（流水线批量查询，
         # 避免逐供应商反复登录触发风控）；凭据仍在首次 query 后清空，会话靠 Cookie。
         self._keep_session = keep_session
+        self._reopen_attempts = max(0, int(reopen_attempts))
         self._driver: SrmBrowserDriver | None = None
         self._session_authenticated = False
+        self._state: BrowserSessionState = "new"
+
+    @property
+    def state(self) -> BrowserSessionState:
+        """当前浏览器会话状态，供宿主显示人工接管或失败原因。"""
+        return self._state
 
     def query(self, subject: QuerySubject, as_of: datetime) -> AdapterResult:
         if not subject.name and not subject.uscc:
@@ -170,7 +226,17 @@ class SrmBrowserClient:
         # keep_session 模式：复用已登录会话（流水线批量查询只登录一次，
         # 降低触发风控验证码的概率）。会话失效时结果会如实标注，重跑即重新登录。
         if self._keep_session and self._session_authenticated and self._driver is not None:
-            return self._query_with_driver(self._driver, subject, as_of)
+            self._state = "querying"
+            recovery_creds = self._take_credentials()
+            try:
+                result = self._query_with_recovery(
+                    self._driver, subject, as_of,
+                    recovery_creds if recovery_creds.username and recovery_creds.password else None,
+                )
+                self._invalidate_after_session_failure(result)
+                return result
+            finally:
+                recovery_creds.clear()
 
         creds = self._take_credentials()
         if not creds.username or not creds.password:
@@ -181,11 +247,33 @@ class SrmBrowserClient:
                 request_mode="browser_session",
             )
 
+        driver: SrmBrowserDriver | None = None
         try:
-            driver = self._driver_factory()
-            driver.open(self.portal_url)
-            login = driver.login(creds.username, creds.password)
+            # 只对浏览器对象被误关/断开做有限重开；认证拒绝、验证码和主体
+            # 歧义不重试，避免把登录失败伪装成查询无结果。
+            for attempt in range(self._reopen_attempts + 1):
+                try:
+                    self._state = "opening"
+                    driver = self._driver_factory()
+                    driver.open(self.portal_url)
+                    self._state = "awaiting_login"
+                    login = driver.login(creds.username, creds.password)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    if driver is not None:
+                        self._close_driver(driver)
+                    driver = None
+                    if attempt >= self._reopen_attempts or not self._is_reopenable(exc):
+                        self._state = "failed"
+                        return AdapterResult(
+                            status="failed",
+                            detail=f"SRM 浏览器启动/登录失败：{type(exc).__name__}",
+                            request_mode="browser_session",
+                        )
             if login.status != "authenticated":
+                self._state = {
+                    "blocked": "blocked", "failed": "failed", "manual": "manual_review",
+                }[login.status]
                 return AdapterResult(
                     status={
                         "blocked": "blocked",
@@ -199,8 +287,12 @@ class SrmBrowserClient:
                 # 会话由浏览器 Cookie 维持；凭据用后即清，后续查询不再需要
                 self._driver = driver
                 self._session_authenticated = True
-                return self._query_with_driver(driver, subject, as_of)
-            return self._query_with_driver(driver, subject, as_of)
+                self._state = "querying"
+                result = self._query_with_recovery(driver, subject, as_of, creds)
+                self._invalidate_after_session_failure(result)
+                return result
+            self._state = "querying"
+            return self._query_with_recovery(driver, subject, as_of, creds)
         except Exception as exc:  # noqa: BLE001
             return AdapterResult(
                 status="failed",
@@ -211,21 +303,115 @@ class SrmBrowserClient:
             creds.clear()
             if not self._keep_session:
                 if driver is not None:
-                    try:
-                        driver.close()
-                    except Exception:
-                        pass
+                    self._close_driver(driver)
                 self._driver = None
 
     def close(self) -> None:
         """keep_session 模式下显式关闭会话（流水线结束后调用）。"""
         if self._driver is not None:
-            try:
-                self._driver.close()
-            except Exception:
-                pass
+            self._close_driver(self._driver)
         self._driver = None
         self._session_authenticated = False
+        self._state = "closed"
+
+    def query_batch(
+        self,
+        subjects: list[QuerySubject],
+        as_of: datetime,
+        checkpoint: BrowserQueryCheckpoint | None = None,
+        on_checkpoint: Callable[[BrowserQueryCheckpoint], None] | None = None,
+    ) -> list[tuple[QuerySubject, AdapterResult]]:
+        """在同一运行内批量查询，并从 checkpoint 跳过已完成主体。
+
+        返回值只包含本次实际处理的主体；被 checkpoint 跳过的主体由调用方从
+        自己的结果文件读取。每个主体完成后立即调用 ``on_checkpoint``，宿主可
+        在中断时保留断点，而无需把凭据或浏览器状态写盘。
+        """
+        progress = checkpoint or BrowserQueryCheckpoint()
+        results: list[tuple[QuerySubject, AdapterResult]] = []
+        try:
+            for subject in subjects:
+                if progress.is_complete(subject.supplier_id):
+                    continue
+                result = self.query(subject, as_of)
+                results.append((subject, result))
+                progress.record(subject.supplier_id, result.status)
+                if on_checkpoint is not None:
+                    on_checkpoint(progress)
+        finally:
+            # query_batch 是一次运行边界；即使调用方没有显式 close，也不能让
+            # Cookie/页面句柄继续存活。
+            self.close()
+        return results
+
+    def _invalidate_after_session_failure(self, result: AdapterResult) -> None:
+        if result.status in {"blocked", "failed"} and self._keep_session:
+            self._session_authenticated = False
+            self._state = "blocked" if result.status == "blocked" else "failed"
+
+    @staticmethod
+    def _is_reopenable(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return any(marker in text for marker in (
+            "closed", "disconnected", "target page", "browser has been closed",
+        ))
+
+    @staticmethod
+    def _close_driver(driver: SrmBrowserDriver) -> None:
+        try:
+            driver.close()
+        except Exception:
+            pass
+
+    def _query_with_recovery(
+        self,
+        driver: SrmBrowserDriver,
+        subject: QuerySubject,
+        as_of: datetime,
+        credentials: BrowserCredentials | None,
+    ) -> AdapterResult:
+        """对浏览器误关做一次重开；业务阻断和主体冲突不重试。"""
+        try:
+            return self._query_with_driver(driver, subject, as_of)
+        except Exception as exc:  # noqa: BLE001
+            if not credentials or not self._is_reopenable(exc) or self._reopen_attempts <= 0:
+                return AdapterResult(
+                    status="failed",
+                    detail=f"SRM 浏览器主体查询失败：{type(exc).__name__}",
+                    request_mode="browser_session",
+                )
+            self._close_driver(driver)
+            reopened: SrmBrowserDriver | None = None
+            try:
+                reopened = self._driver_factory()
+                self._state = "opening"
+                reopened.open(self.portal_url)
+                self._state = "awaiting_login"
+                login = reopened.login(credentials.username, credentials.password)
+                if login.status != "authenticated":
+                    self._state = {
+                        "blocked": "blocked", "failed": "failed", "manual": "manual_review",
+                    }[login.status]
+                    return AdapterResult(
+                        status={"blocked": "blocked", "failed": "failed", "manual": "needs_manual_review"}[login.status],
+                        detail=self._safe_detail(login.detail or "SRM 浏览器重开后登录未完成"),
+                        request_mode="browser_session",
+                    )
+                self._state = "querying"
+                if self._keep_session:
+                    self._driver = reopened
+                    self._session_authenticated = True
+                result = self._query_with_driver(reopened, subject, as_of)
+                return result
+            except Exception as retry_exc:  # noqa: BLE001
+                return AdapterResult(
+                    status="failed",
+                    detail=f"SRM 浏览器重开后查询失败：{type(retry_exc).__name__}",
+                    request_mode="browser_session",
+                )
+            finally:
+                if reopened is not None and not self._keep_session:
+                    self._close_driver(reopened)
 
     def _query_with_driver(
         self, driver: SrmBrowserDriver, subject: QuerySubject, as_of: datetime
@@ -236,7 +422,8 @@ class SrmBrowserClient:
                 status="needs_manual_review",
                 detail=self._safe_detail(matched.detail or "企业主体未确认，停止读取风险页面"),
                 request_mode="browser_session",
-                response_ref=matched.profile_ref,
+                response_ref=self._safe_ref(matched.profile_ref),
+                branch_candidates=matched.branch_candidates,
             )
 
         sections: list[BrowserSectionResult] = []
@@ -265,6 +452,15 @@ class SrmBrowserClient:
         for marker in ("password=", "passwd=", "token=", "cookie="):
             if marker in text.lower():
                 return "浏览器返回了敏感字段，已隐藏；请人工复核登录状态"
+        return text
+
+    @staticmethod
+    def _safe_ref(ref: str | None) -> str | None:
+        if not ref:
+            return None
+        text = str(ref)[:400]
+        if any(marker in text.lower() for marker in ("token", "cookie", "session", "login")):
+            return "浏览器页面引用已隐藏（包含敏感会话字段）"
         return text
 
     @staticmethod
@@ -351,10 +547,11 @@ class SrmBrowserClient:
                 status="no_result",
                 detail="已完成主体确认，但页面没有可机读的结构化结果；不能据此结论为无风险，需人工复核页面",
                 request_mode="browser_session",
-                response_ref="; ".join(refs) or None,
+                response_ref=SrmBrowserClient._safe_ref("; ".join(refs) or None),
                 resolved_name=matched.name,
                 resolved_uscc=matched.uscc,
                 subject_confirmation=matched.confirmation,
+                branch_candidates=matched.branch_candidates,
             )
         if records:
             return AdapterResult(
@@ -366,17 +563,19 @@ class SrmBrowserClient:
                     f"查询时间={as_of.isoformat()}）；页面空分类不解释为无风险"
                 ),
                 request_mode="browser_session",
-                response_ref="; ".join(refs) or matched.profile_ref,
+                response_ref=SrmBrowserClient._safe_ref("; ".join(refs) or matched.profile_ref),
                 resolved_name=matched.name,
                 resolved_uscc=matched.uscc,
                 subject_confirmation=matched.confirmation,
+                branch_candidates=matched.branch_candidates,
             )
         return AdapterResult(
             status="no_result",
             detail="页面已打开但没有可确认的记录；不能据此结论为无风险",
             request_mode="browser_session",
-            response_ref="; ".join(refs) or matched.profile_ref,
+            response_ref=SrmBrowserClient._safe_ref("; ".join(refs) or matched.profile_ref),
             resolved_name=matched.name,
             resolved_uscc=matched.uscc,
             subject_confirmation=matched.confirmation,
+            branch_candidates=matched.branch_candidates,
         )

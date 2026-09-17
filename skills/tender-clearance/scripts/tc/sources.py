@@ -66,6 +66,9 @@ class AdapterResult:
     resolved_name: str | None = None
     resolved_uscc: str | None = None
     subject_confirmation: str | None = None
+    # SRM 名称查询可能同时看到关联分公司；仅作为主体关系候选透传，不能
+    # 作为当前主体记录或重复项参与风险判断。
+    branch_candidates: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -407,10 +410,9 @@ class SrmAdapter:
 
             factory = _srm_browser.get_browser_driver_factory()
             if factory is not None:
-                # 该门户在同一浏览器会话切换企业后可能残留旧画像 iframe，导致
-                # 第二家/第三家无法确认主体。正式默认每家供应商隔离会话；只有
-                # 明确设置 SRM_BROWSER_REUSE_SESSION=1 才复用会话做性能实验。
-                reuse_session = os.environ.get("SRM_BROWSER_REUSE_SESSION", "") == "1"
+                # 驱动会在切换主体时清理旧画像并等待身份稳定，因此一次运行内
+                # 默认复用登录会话；SRM_BROWSER_REUSE_SESSION=0 可在诊断时隔离。
+                reuse_session = os.environ.get("SRM_BROWSER_REUSE_SESSION", "1") != "0"
                 self._client = _srm_browser.SrmBrowserClient(
                     driver_factory=factory,
                     credential_provider=(

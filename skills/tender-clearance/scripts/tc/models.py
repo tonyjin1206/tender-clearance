@@ -425,6 +425,9 @@ class ExternalQuery(_Strict):
     evidence_ids: list[str] = Field(default_factory=list)
     detail: str | None = None
     adapter_version: str | None = None
+    # SRM 名称查询发现的关联分公司候选；仅作主体关系线索，不参与当前主体
+    # 的记录归属或重复判定。
+    branch_candidates: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ExternalRecord(_Strict):
