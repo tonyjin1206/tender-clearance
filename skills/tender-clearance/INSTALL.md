@@ -26,6 +26,14 @@ py scripts\install_environment.py -- py -3.12 -m pip install -r requirements-cor
 .\.venv\Scripts\python.exe -m pip install ".[srm]" # SRM 浏览器会话适配器
 ```
 
+SRM人工登录模式（推荐用于需要验证码、二次验证或不希望脚本接触凭据的场景）：
+
+```bash
+SRM_BROWSER_MANUAL_LOGIN=1 python scripts/query_sources.py <项目目录> --refresh
+```
+
+该模式会打开独立的可见浏览器窗口，不要求、不读取、不填充账号密码；用户需在窗口内完成登录和验证码。程序会提示等待登录、登录成功、浏览器关闭、有限重开和超时人工复核。可用 `SRM_MANUAL_LOGIN_TIMEOUT_SECONDS` 调整人工登录等待时间。
+
 生产 OCR 不通过本包安装。宿主 Agent 需声明并提供 `ocr.capabilities.v1`，然后把
 `ocr-result.v1` 结果交给 `scripts/import_ocr_results.py`；默认要求本地处理。质量优先
 的参考实现使用 PaddleOCR `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`，并返回块坐标；
