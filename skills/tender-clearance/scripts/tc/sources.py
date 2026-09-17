@@ -386,10 +386,12 @@ class SrmAdapter:
         config: SourceConfig | None = None,
         client: Any = None,
         credentials: tuple[str, str] | None = None,
+        status_callback: Callable[[Any], None] | None = None,
     ) -> None:
         self.config = config
         self._client = client
         self._runtime_credentials = credentials
+        self._status_callback = status_callback
 
     def _get_client(self):
         if self._client is None:
@@ -431,6 +433,7 @@ class SrmAdapter:
                     manual_login_timeout_s=int(os.environ.get(
                         "SRM_MANUAL_LOGIN_TIMEOUT_SECONDS", "300"
                     )),
+                    status_callback=self._status_callback,
                 )
             else:
                 cfg = load_srm_config()
@@ -496,11 +499,16 @@ def build_adapters(
     configs: dict[str, SourceConfig],
     transport_factory: Callable[[SourceConfig], HttpTransport | None] | None = None,
     runtime_credentials: dict[str, tuple[str, str]] | None = None,
+    status_callbacks: dict[str, Callable[[Any], None]] | None = None,
 ) -> dict[str, SourceAdapter]:
     out: dict[str, SourceAdapter] = {}
     for sid, cfg in configs.items():
         if sid == "srm":
-            out[sid] = SrmAdapter(cfg, credentials=(runtime_credentials or {}).get(sid))
+            out[sid] = SrmAdapter(
+                cfg,
+                credentials=(runtime_credentials or {}).get(sid),
+                status_callback=(status_callbacks or {}).get(sid),
+            )
         else:
             transport = transport_factory(cfg) if transport_factory else None
             out[sid] = HttpSourceAdapter(cfg, transport=transport)

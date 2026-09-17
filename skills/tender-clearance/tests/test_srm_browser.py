@@ -417,6 +417,7 @@ def test_srm_adapter_manual_login_env_skips_credential_provider(monkeypatch):
     sb.clear_browser_driver()
     monkeypatch.setenv("SRM_BROWSER_DRIVER", "playwright")
     monkeypatch.setenv("SRM_BROWSER_MANUAL_LOGIN", "1")
+    events: list[BrowserSessionEvent] = []
     sb.register_browser_driver(
         factory=ManualDriver,
         credential_provider=lambda: (_ for _ in ()).throw(
@@ -424,12 +425,51 @@ def test_srm_adapter_manual_login_env_skips_credential_provider(monkeypatch):
         ),
     )
     try:
-        result = SrmAdapter().query(
+        adapter = SrmAdapter(status_callback=events.append)
+        result = adapter.query(
             QuerySubject("S1", "虚构供应商甲有限公司", "91350100M000100Y43"),
             datetime.now(timezone.utc),
         )
         assert result.status == "match"
+        assert [event.state for event in events] == ["awaiting_manual_login", "authenticated"]
     finally:
         sb.clear_browser_driver()
         monkeypatch.delenv("SRM_BROWSER_DRIVER", raising=False)
         monkeypatch.delenv("SRM_BROWSER_MANUAL_LOGIN", raising=False)
+
+
+def test_build_adapters_forwards_optional_srm_status_callback():
+    from tc.sources import SourceConfig, SrmAdapter, build_adapters
+
+    callback = lambda _event: None
+    adapters = build_adapters(
+        {"srm": SourceConfig(source_id="srm", label="富奥SRM")},
+        status_callbacks={"srm": callback},
+    )
+
+    assert isinstance(adapters["srm"], SrmAdapter)
+    assert adapters["srm"]._status_callback is callback
+
+
+def test_srm_cli_status_callback_uses_static_safe_messages(capsys):
+    from query_sources import _srm_cli_status_callback
+
+    _srm_cli_status_callback(BrowserSessionEvent(
+        state="awaiting_manual_login", message="secret token=do-not-print"
+    ))
+    _srm_cli_status_callback(BrowserSessionEvent(
+        state="reopening", message="page html secret", attempt=1
+    ))
+    _srm_cli_status_callback(BrowserSessionEvent(
+        state="manual_review", message="password=do-not-print"
+    ))
+    _srm_cli_status_callback(BrowserSessionEvent(
+        state="authenticated", message="hidden page text"
+    ))
+
+    output = capsys.readouterr().out
+    assert "请在已打开的 SRM 浏览器窗口" in output
+    assert "正在进行第 1 次有限重开" in output
+    assert "人工登录未完成或已超时" in output
+    assert "SRM 登录成功" in output
+    assert "secret" not in output and "password" not in output

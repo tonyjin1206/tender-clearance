@@ -65,6 +65,23 @@ REUSABLE_LIVE_STATUSES = {"match", "no_match_verified", "no_result"}
 app = typer.Typer(help="执行外部查询并生成查询覆盖记录（合并入 external.json）")
 
 
+def _srm_cli_status_callback(event) -> None:
+    """把库层脱敏事件转换为不回显详情的 CLI 提示。"""
+    state = getattr(event, "state", "")
+    attempt = int(getattr(event, "attempt", 0) or 0)
+    messages = {
+        "awaiting_manual_login": "请在已打开的 SRM 浏览器窗口完成账号、密码和验证码输入。",
+        "reopening": f"检测到浏览器关闭，正在进行第 {attempt} 次有限重开。",
+        "authenticated": "SRM 登录成功，开始查询主体。",
+        "manual_review": "人工登录未完成或已超时，未继续主体查询，请人工复核。",
+        "failed": "SRM 浏览器操作失败或已关闭，请人工复核。",
+        "blocked": "SRM 登录或访问被阻断，已停止查询。",
+    }
+    message = messages.get(state)
+    if message:
+        typer.secho(f"[SRM] {message}", fg=typer.colors.YELLOW if state != "authenticated" else typer.colors.GREEN)
+
+
 def _query_subject_for_supplier(supplier) -> QuerySubject:
     """从实体构造外部查询主体；优先采用归组确认后的显示名称。"""
     return QuerySubject(
@@ -167,7 +184,12 @@ def run(
     adapters = {}
     if live_sources:
         adapters = build_adapters({sid: source_configs.get(sid, SourceConfig(source_id=sid, label=sid))
-                                   for sid in live_sources}, runtime_credentials=runtime_credentials)
+                                   for sid in live_sources},
+                                  runtime_credentials=runtime_credentials,
+                                  status_callbacks=(
+                                      {"srm": _srm_cli_status_callback}
+                                      if manual_browser_login else {}
+                                  ))
     if manual_browser_login and "srm" in live_sources:
         typer.secho(
             "[SRM] 人工登录模式：即将打开可见浏览器，请在窗口内输入账号、密码并完成验证码；"
