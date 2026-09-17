@@ -26,6 +26,16 @@ py scripts\install_environment.py -- py -3.12 -m pip install -r requirements-cor
 .\.venv\Scripts\python.exe -m pip install ".[srm]" # SRM 浏览器会话适配器
 ```
 
+如用户提供空白招标文件 Word 模板，模板输入是可选的，但应明确告知用户：提供模板可大幅提高
+指标定位和 OCR 识别准确度。可在 `project.yaml` 指定项目根相对路径：
+
+```yaml
+tender_template_path: procurement/空白招标文件模板.docx
+```
+
+预检会在发现模板时检查 `python-docx`；没有模板则不要求该依赖，继续使用通用 OCR 兜底并保留
+人工复核提示。多个可能模板不会自动猜选。
+
 SRM人工登录模式（推荐用于需要验证码、二次验证或不希望脚本接触凭据的场景）：
 
 ```bash

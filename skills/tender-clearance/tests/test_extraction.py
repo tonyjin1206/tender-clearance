@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from tc.fields import scan_inline, scan_ocr_blocks
+from tc.fields import scan_inline, scan_ocr_blocks, scan_template_metric_blocks
 from tc.field_decisions import decisions_for_fields, resolve_single_value
 
 
@@ -126,6 +126,45 @@ def test_ocr_spatial_candidate_retains_label_relation_and_bboxes():
     assert hit.label_relation == "same_line_right"
     assert hit.label_bbox == blocks[0]["bbox"]
     assert hit.value_bbox == blocks[1]["bbox"]
+
+
+def test_template_metric_anchor_pairs_only_nearby_value_block():
+    metrics = [{"metric_id": "M-abc123", "label": "额定功率"}]
+    blocks = [
+        {"text": "额定功率", "confidence": 0.98,
+         "bbox": {"x": 0.10, "y": 0.20, "width": 0.12, "height": 0.03}},
+        {"text": "15kW", "confidence": 0.96,
+         "bbox": {"x": 0.25, "y": 0.20, "width": 0.10, "height": 0.03}},
+        {"text": "额定电压", "confidence": 0.98,
+         "bbox": {"x": 0.10, "y": 0.70, "width": 0.12, "height": 0.03}},
+        {"text": "220V", "confidence": 0.96,
+         "bbox": {"x": 0.25, "y": 0.70, "width": 0.10, "height": 0.03}},
+    ]
+
+    hits = scan_template_metric_blocks(metrics=metrics, blocks=blocks,
+                                       average_confidence=0.98, location_precision="block")
+
+    assert len(hits) == 1
+    assert hits[0].field == "metric:M-abc123"
+    assert hits[0].value == "15kW"
+    assert hits[0].label_relation == "template_metric_same_line_right"
+    assert hits[0].label_bbox == blocks[0]["bbox"]
+    assert hits[0].value_bbox == blocks[1]["bbox"]
+
+
+def test_template_metric_page_only_requires_inline_label_value():
+    metrics = [{"metric_id": "M-abc123", "label": "额定功率"}]
+    blocks = [{"text": "额定功率"}, {"text": "15kW"}]
+
+    assert scan_template_metric_blocks(
+        blocks, metrics, average_confidence=0.98, location_precision="page_only"
+    ) == []
+    inline = scan_template_metric_blocks(
+        [{"text": "额定功率：15kW", "confidence": 0.98}], metrics,
+        average_confidence=0.98, location_precision="page_only",
+    )
+    assert inline[0].value == "15kW"
+    assert inline[0].confidence <= 0.5
 
 
 def test_conflicting_core_candidates_are_kept_for_review_not_selected():

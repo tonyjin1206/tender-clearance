@@ -115,6 +115,19 @@
       ],
       "title": "Ocr Provider",
       "type": "string"
+    },
+    "tender_template_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "可选：空白招标文件 Word 模板（项目根相对路径）；提供后优先用于指标定位，可大幅提高 OCR 识别准确度",
+      "title": "Tender Template Path"
     }
   },
   "required": [

@@ -18,7 +18,8 @@ from .models import ContentFile, EntitiesFile, FindingsFile, InventoryFile, OCRJ
 
 _REPORT_LOCATION_KEYS = {
     "kind", "page", "sheet", "cell", "table", "row", "col", "index", "cover",
-    "label", "label_relation", "via_label",
+    "label", "label_relation", "via_label", "template_metric_id", "template_label",
+    "template_path", "template_mode",
 }
 _OCR_TERMINAL_STATUSES = {"succeeded", "failed", "blocked", "not_supported", "cancelled"}
 REPORT_INPUT_FORBIDDEN_KEYS = frozenset({
@@ -144,6 +145,23 @@ def build_process_artifacts(
     report_facts = [_field_fact(field, include_quality=False) for field in content.fields]
     decisions = decisions_for_fields(content.fields)
     completion = ocr_completion(project_dir)
+    template_spec_path = interim / "template-spec.json"
+    template_spec: dict[str, Any] = {}
+    if template_spec_path.exists():
+        try:
+            template_spec = json.loads(template_spec_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            template_spec = {}
+    template_info = {
+        "status": template_spec.get("status", "not_provided"),
+        "mode": template_spec.get("mode", "generic_ocr"),
+        "source_path": template_spec.get("source_path"),
+        "metric_count": len(template_spec.get("metrics", [])),
+        "message": template_spec.get(
+            "message",
+            "未提供空白招标 Word 模板；通用 OCR 结果需更严格人工复核。提供模板可大幅提高指标定位和识别准确度",
+        ),
+    }
     expected_ocr_pages = completion["expected_jobs"]
     completed_ocr_pages = completion["succeeded_jobs"]
     review_count = sum(1 for field in content.fields if field.low_confidence)
@@ -178,6 +196,8 @@ def build_process_artifacts(
             "ocr_results": "output/interim/ocr-results.json",
             "content": "output/interim/content.json",
             "evidence": "output/interim/evidence-content.json",
+            "template_spec": "output/interim/template-spec.json",
+            "template_info": template_info,
         },
     }
 
@@ -200,6 +220,8 @@ def build_process_artifacts(
             "process_workpaper": "output/interim/process-workpaper.json",
             "evidence_index": "output/证据索引.csv",
             "review_queue": "output/人工复核清单.csv",
+            "template_spec": "output/interim/template-spec.json",
+            "template_info": template_info,
         },
     }
     write_json(interim / "process-workpaper.json", process_workpaper)

@@ -19,6 +19,7 @@ import typer
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tc.projio import ProjectError, load_project_config
+from tc.template_locator import resolve_template
 
 app = typer.Typer(help="生成清标安装/运行前预检计划（只读）")
 
@@ -72,6 +73,12 @@ UPFRONT_QUESTIONS = [
         "project_yaml_key": "redaction_mode",
         "choices": {"show_full": "none", "mask": "standard"},
     },
+    {
+        "id": "tender_template",
+        "prompt": "可选：请上传或指定空白招标文件 Word 模板；提供后可大幅提高指标定位和 OCR 识别准确度。未提供时继续使用通用 OCR 兜底，但需保留更严格的人工复核。",
+        "required": False,
+        "project_yaml_key": "tender_template_path",
+    },
 ]
 
 
@@ -112,6 +119,7 @@ def build_plan(project_dir: Path, profile: str) -> dict:
     if profile not in {"report", "review", "workpaper"}:
         raise ProjectError(f"不支持的输出档位：{profile}")
     cfg = load_project_config(project_dir)
+    template = resolve_template(project_dir, cfg.tender_template_path)
     files = [
         p for root in ("bids", "procurement", "external-evidence")
         for p in (project_dir / root).rglob("*")
@@ -127,6 +135,8 @@ def build_plan(project_dir: Path, profile: str) -> dict:
         required.update(OPTIONAL_MODULES["live"])
         if "srm" in cfg.external_query_sources:
             required.update(OPTIONAL_MODULES["srm"])
+    if template.status == "provided":
+        required["docx"] = "python-docx"
     missing = [package for module, package in required.items()
                if importlib.util.find_spec(module) is None]
     live_srm = cfg.external_query_mode == "live" and "srm" in cfg.external_query_sources
@@ -148,6 +158,15 @@ def build_plan(project_dir: Path, profile: str) -> dict:
             "id": "ocr_provider",
             "prompt": "扫描页是否已有宿主 OCR Provider；没有则保留 ocr_unavailable 并进入人工复核",
             "default": "use_existing_provider_or_manual_review",
+        },
+        {
+            "id": "tender_template",
+            "prompt": "可选：是否提供空白招标文件 Word 模板作为指标定位锚点？提供后可大幅提高识别准确度；不提供则使用通用 OCR 兜底。",
+            "required": False,
+            "status": template.status,
+            "path": template.relative_path,
+            "candidates": template.candidates,
+            "message": template.message,
         },
     ]
     if live_srm:
@@ -178,6 +197,12 @@ def build_plan(project_dir: Path, profile: str) -> dict:
             "bid_file_count": len(bid_files),
             "bid_filename_classification": dict(sorted(classifications.items())),
             "technical_body_scan": "skip_by_filename",
+            "tender_template": template.to_dict() if hasattr(template, "to_dict") else {
+                "status": template.status,
+                "path": template.relative_path,
+                "candidates": template.candidates,
+                "message": template.message,
+            },
         },
         "environment": {
             "python": sys.version.split()[0],

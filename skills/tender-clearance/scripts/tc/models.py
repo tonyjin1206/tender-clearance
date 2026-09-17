@@ -97,6 +97,10 @@ class ProjectConfig(_Strict):
         default="none",
         description="仅用于 none 或测试 mock；生产 OCR 由宿主 Agent 通过 OCR 契约提供",
     )
+    tender_template_path: str | None = Field(
+        default=None,
+        description="可选：空白招标文件 Word 模板（项目根相对路径）；提供后优先用于指标定位，可大幅提高 OCR 识别准确度",
+    )
 
 
 # 清单 ------------------------------------------------------------------------

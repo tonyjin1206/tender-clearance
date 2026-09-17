@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .normalize import to_halfwidth, uscc_check_digit, USCC_CHARSET
+from .template_locator import normalize_template_label
 
 # --------------------------------------------------------------- 基础正则
 
@@ -359,6 +360,125 @@ def scan_ocr_blocks(
         if (hit.field, hit.value) not in seen:
             hits.append(hit)
             seen.add((hit.field, hit.value))
+    return hits
+
+
+def scan_template_metric_blocks(
+    blocks: list[dict[str, Any]],
+    metrics: list[dict[str, Any]],
+    *,
+    average_confidence: float | None = None,
+    location_precision: str = "page_only",
+) -> list[FieldHit]:
+    """按空白招标模板的指标标签，保守地配对 OCR 值块。
+
+    模板只提供“锚点”，不替代投标文件中的实际内容。只有同一 OCR 块明确出现
+    “标签：值”，或存在坐标且值块位于标签右侧/紧邻下方时才产出候选；page_only
+    无法证明版面关系时不猜，避免再次把相邻指标错配。
+    """
+    clean = [b for b in blocks if str(b.get("text", "")).strip()]
+    if not clean or not metrics:
+        return []
+    page_conf = average_confidence if average_confidence is not None else 0.0
+    metric_items = [m for m in metrics if normalize_template_label(str(m.get("label", "")))]
+    metric_items.sort(key=lambda m: len(normalize_template_label(str(m.get("label", "")))), reverse=True)
+
+    def center(block: dict[str, Any]) -> tuple[float, float]:
+        box = block.get("bbox") or {}
+        return (float(box.get("x", 0)) + float(box.get("width", 0)) / 2,
+                float(box.get("y", 0)) + float(box.get("height", 0)) / 2)
+
+    def block_conf(block: dict[str, Any]) -> float:
+        value = block.get("confidence", page_conf)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return page_conf
+
+    def matching_metric(text: str, metric: dict[str, Any]) -> bool:
+        normalized = normalize_template_label(text)
+        target = normalize_template_label(str(metric.get("label", "")))
+        return bool(target and (normalized == target or target in normalized))
+
+    def explicit_value(text: str, label: str) -> str | None:
+        # OCR 可能在标签中插入空格/标点，因此先按原文，再按规范化字符串判断。
+        escaped = re.escape(label.strip())
+        match = re.search(escaped + r"\s*[：:]\s*(.+)$", text.strip())
+        if match:
+            value = match.group(1).strip(" ：:，,；;。")
+            return value or None
+        if normalize_template_label(text).startswith(normalize_template_label(label)):
+            remainder = text.strip()[len(label):].lstrip(" ：:—-\t")
+            return remainder.strip("，,；;。 ") or None
+        return None
+
+    has_coordinates = location_precision != "page_only" and any(b.get("bbox") for b in clean)
+    hits: list[FieldHit] = []
+    used: set[tuple[str, str]] = set()
+    for metric in metric_items:
+        metric_id = str(metric.get("metric_id", "")).strip()
+        label_text = str(metric.get("label", "")).strip()
+        if not metric_id or not label_text:
+            continue
+        for label_index, label_block in enumerate(clean):
+            text = str(label_block.get("text", "")).strip()
+            if not matching_metric(text, metric):
+                continue
+            value: str | None = explicit_value(text, label_text)
+            value_block: dict[str, Any] | None = label_block if value else None
+            relation = "template_metric_inline"
+            if value is None and has_coordinates:
+                label_box = label_block.get("bbox") or {}
+                lx, ly = center(label_block)
+                lh = float(label_box.get("height", 0.03))
+                candidates: list[tuple[float, dict[str, Any], str]] = []
+                for index, candidate in enumerate(clean):
+                    if index == label_index:
+                        continue
+                    candidate_text = str(candidate.get("text", "")).strip()
+                    if any(matching_metric(candidate_text, other) for other in metric_items):
+                        continue
+                    vx, vy = center(candidate)
+                    if vx < lx - 0.01:
+                        continue
+                    dy = abs(vy - ly)
+                    if dy <= max(lh * 2.5, 0.045):
+                        score = dy + max(0.0, vx - lx) * 0.05
+                        candidate_relation = "template_metric_same_line_right"
+                    elif 0 <= vy - ly <= max(lh * 5, 0.12) and abs(vx - lx) <= 0.18:
+                        score = 0.2 + (vy - ly)
+                        candidate_relation = "template_metric_below_near"
+                    else:
+                        continue
+                    candidates.append((score, candidate, candidate_relation))
+                if candidates:
+                    candidates.sort(key=lambda item: item[0])
+                    _, value_block, relation = candidates[0]
+                    value = str(value_block.get("text", "")).strip().strip(" ：:，,；;。") or None
+                    relation = candidate_relation
+            if not value or len(value) > 240:
+                continue
+            key = (metric_id, value)
+            if key in used:
+                continue
+            used.add(key)
+            label_box = label_block.get("bbox") or None
+            value_box = (value_block or {}).get("bbox") or None
+            confidence = min(block_conf(label_block), block_conf(value_block or label_block))
+            if not has_coordinates:
+                confidence = min(confidence, page_conf, 0.5)
+            hits.append(FieldHit(
+                field=f"metric:{metric_id}",
+                value=value,
+                context=f"模板指标锚点：{label_text} → {value[:100]}",
+                confidence=confidence,
+                via_label=True,
+                label=label_text,
+                label_relation=relation,
+                label_bbox=dict(label_box) if label_box else None,
+                value_bbox=dict(value_box) if value_box else None,
+            ))
+            break
     return hits
 
 

@@ -23,7 +23,7 @@ import typer
 
 from tc import parsers
 from tc.canon import load_json, write_json
-from tc.fields import extract_from_cells, scan_inline, scan_ocr_blocks
+from tc.fields import extract_from_cells, scan_inline, scan_ocr_blocks, scan_template_metric_blocks
 from tc.models import (
     ContentFile,
     DocumentContent,
@@ -55,6 +55,7 @@ from tc.projio import (
     load_project_config,
     load_run_info,
 )
+from tc.template_locator import TemplateSpec, load_template_spec, write_template_spec
 from tc.ocr_contract import job_for_page, safe_input_ref
 
 LOW_CONFIDENCE_THRESHOLD = 0.85
@@ -89,6 +90,9 @@ def build_content(project_dir: Path) -> ContentFile:
     out_dir, interim = ensure_output_dirs(project_dir)
     builder = EvidenceBuilder(load_run_info(interim), cfg.id_digest_salt, cfg.redaction_mode)
     imported_ocr = _load_ocr_results(interim)
+    template_spec = load_template_spec(project_dir, cfg.tender_template_path)
+    write_template_spec(project_dir, template_spec)
+    template_metrics = [metric.__dict__ for metric in template_spec.metrics]
 
     doc_contents: list[DocumentContent] = []
     fields: list[FieldRecord] = []
@@ -119,9 +123,12 @@ def build_content(project_dir: Path) -> ContentFile:
                 else:
                     parsed_document = parsers.deserialize_parsed(_load_document_parsed(project_dir, doc.sha256))
                     if doc.media_type == "application/pdf":
+                        template_technical = bool(template_metrics and doc.bid_subtype == "technical")
                         dc, fr, an, new_jobs, mock_results, parsed_document = _extract_pdf(
                             path, doc, cfg, builder, project_dir, parsed=parsed_document,
-                            max_pages=1, identity_only=True, allow_ocr=False,
+                            max_pages=None if template_technical else 1,
+                            identity_only=True,
+                            allow_ocr=template_technical,
                         )
                     else:
                         dc = DocumentContent(
@@ -135,7 +142,10 @@ def build_content(project_dir: Path) -> ContentFile:
                     jobs.extend(new_jobs)
                     generated_results.extend(mock_results)
                 if doc.bid_subtype == "technical":
-                    dc.issues.append("跳过正文扫描：技术标仅解析首页以确认供应商；正文、表格和媒体不进入主体提取")
+                    if template_metrics:
+                        dc.issues.append("已提供 Word 模板：技术标仅生成模板指标 OCR 任务；不提取主体字段")
+                    else:
+                        dc.issues.append("跳过正文扫描：技术标仅解析首页以确认供应商；正文、表格和媒体不进入主体提取")
                 elif doc.bid_subtype == "bid_schedule":
                     dc.issues.append("投标一览表仅解析首页以确认供应商和报价文件归属")
                 else:
@@ -232,7 +242,14 @@ def build_content(project_dir: Path) -> ContentFile:
             continue
         dc.ocr_pages.append(result.page)
         dc.scanned_pages = sorted(set(dc.scanned_pages))
-        fields.extend(_scan_ocr_result(result, builder, doc, dc))
+        fields.extend(_scan_ocr_result(
+            result,
+            builder,
+            doc,
+            dc,
+            template_spec=template_spec,
+            template_only=bool(template_metrics and doc.bid_subtype == "technical"),
+        ))
 
     # 未有结果的扫描页继续保留 ocr_unavailable；已有成功结果的页不重复报缺口。
     result_pages = {(r.document_id, r.page) for r in active_results}
@@ -377,13 +394,28 @@ def _write_document_cache(
     write_json(path, payload)
 
 
-def _scan_ocr_result(result: OCRResult, builder: EvidenceBuilder, doc, dc: DocumentContent) -> list[FieldRecord]:
+def _scan_ocr_result(
+    result: OCRResult,
+    builder: EvidenceBuilder,
+    doc,
+    dc: DocumentContent,
+    *,
+    template_spec: TemplateSpec | None = None,
+    template_only: bool = False,
+) -> list[FieldRecord]:
     blocks = [b.model_dump(mode="json") for b in result.blocks]
-    hits = scan_ocr_blocks(
+    template_hits = scan_template_metric_blocks(
+        blocks,
+        [metric.__dict__ for metric in (template_spec.metrics if template_spec else [])],
+        average_confidence=result.average_confidence,
+        location_precision=result.location_precision,
+    )
+    hits = [] if template_only else scan_ocr_blocks(
         blocks,
         average_confidence=result.average_confidence,
         location_precision=result.location_precision,
     )
+    hits = [*template_hits, *hits]
     out: list[FieldRecord] = []
     for hit in hits:
         location: dict[str, Any] = {
@@ -400,13 +432,25 @@ def _scan_ocr_result(result: OCRResult, builder: EvidenceBuilder, doc, dc: Docum
             "cover": result.page == 1 and _looks_like_cover("\n".join(b["text"] for b in blocks)),
             "via_label": bool(hit.via_label),
         }
+        if hit.field.startswith("metric:") and template_spec:
+            location.update({
+                "template_metric_id": hit.field.split(":", 1)[1],
+                "template_label": hit.label,
+                "template_path": template_spec.source_path,
+                "template_mode": template_spec.mode,
+            })
         # 有 block 坐标时以标签和值自身置信度为准；页面平均置信度会被印章、
         # 背景和身份证照片拖低，不能把清晰的单字段一起降成低置信度。
         ocr_confidence = hit.confidence if result.location_precision == "block" else min(
             hit.confidence, result.average_confidence or 0.0
         )
         out.append(_build_field_record(
-            hit, builder, doc, location, method="ocr_host", confidence=ocr_confidence
+            hit,
+            builder,
+            doc,
+            location,
+            method="ocr_host_template" if hit.field.startswith("metric:") else "ocr_host",
+            confidence=ocr_confidence,
         ))
     return out
 

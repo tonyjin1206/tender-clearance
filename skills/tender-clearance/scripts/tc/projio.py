@@ -78,7 +78,7 @@ def salt_fingerprint(salt: str) -> str:
     return hashlib.sha256(salt.encode("utf-8")).hexdigest()[:8]
 
 
-DOCUMENT_CACHE_VERSION = "document-cache.v3"
+DOCUMENT_CACHE_VERSION = "document-cache.v4"
 
 
 def document_cache_key(doc: Any, cfg: Any, stage: str) -> str:
@@ -102,6 +102,7 @@ def document_cache_key(doc: Any, cfg: Any, stage: str) -> str:
             "redaction_mode": getattr(cfg, "redaction_mode", None),
             "id_digest_salt_fingerprint": salt_fingerprint(getattr(cfg, "id_digest_salt", "")),
             "ocr_provider": getattr(cfg, "ocr_provider", None),
+            "tender_template_path": getattr(cfg, "tender_template_path", None),
         },
         length=16,
     )
