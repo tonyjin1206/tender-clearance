@@ -13,6 +13,10 @@ from pathlib import Path
 import pytest
 
 from tc.pipeline import run_all
+from tc.field_decisions import decisions_for_fields
+from tc.models import ContentFile, Evidence, EntitiesFile, FindingsFile, InventoryFile, MetadataFile, ExternalEvidenceFile
+from tc.projio import load_project_config
+from render_report import _build_context, _render_markdown
 
 _ID18 = re.compile(r"(?<![0-9A-Za-z])\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![0-9A-Za-z])")
 _MOBILE = re.compile(r"(?<![0-9A-Za-z])1[3-9]\d{9}(?![0-9A-Za-z])")
@@ -131,3 +135,46 @@ def test_report_no_accusatory_language(alpha_project, alpha_findings):
     text = (alpha_project / "output/清标报告.md").read_text(encoding="utf-8")
     for banned in ("串标成立", "围标", "认定串通", "违法认定", "同一制作方"):
         assert banned not in text
+
+
+def test_stale_project_candidate_never_enters_formal_report_field(alpha_project, tmp_path):
+    """回归：旧报告/过期候选与当前值冲突时，不得拼接进正式项目编号。"""
+    root = alpha_project / "output/interim"
+    content = ContentFile(**json.loads((root / "content.json").read_text(encoding="utf-8")))
+    current = next(field for field in content.fields if field.field == "project_code")
+    stale = current.model_copy(update={
+        "value_masked": "PRJ-STALE-FROM-OLD-REPORT",
+        "normalized": "PRJ-STALE-FROM-OLD-REPORT",
+        "evidence_id": "EV-STALE-REPORT",
+        "location": {"kind": "pdf_page", "page": 1, "cover": True, "label_relation": "inline_label"},
+    })
+    content = content.model_copy(update={"fields": [*content.fields, stale]})
+    decisions = decisions_for_fields(content.fields)
+    code_decision = next(d for d in decisions if d.scope == "project" and d.field == "project_code")
+    assert code_decision.status == "conflict"
+    assert "EV-STALE-REPORT" in code_decision.evidence_ids
+
+    inventory = InventoryFile(**json.loads((root / "inventory.json").read_text(encoding="utf-8")))
+    entities = EntitiesFile(**json.loads((root / "entities.json").read_text(encoding="utf-8")))
+    findings = FindingsFile(**json.loads((root / "findings.json").read_text(encoding="utf-8")))
+    metadata = MetadataFile(**json.loads((root / "metadata.json").read_text(encoding="utf-8")))
+    external = ExternalEvidenceFile(**json.loads((root / "external.json").read_text(encoding="utf-8")))
+    evidence = {
+        item.evidence_id: item
+        for item in (
+            Evidence(**raw)
+            for raw in json.loads((root / "evidence-content.json").read_text(encoding="utf-8"))["evidence"]
+        )
+    }
+    report_input = {"field_decisions": [decision.as_dict() for decision in decisions]}
+    ctx = _build_context(
+        load_project_config(alpha_project), inventory, entities, metadata, external,
+        findings, evidence, set(), content, alpha_project, {}, report_input,
+    )
+    assert ctx["project_identity"]["project_code"] == []
+
+    output = tmp_path / "report.md"
+    _render_markdown(ctx, output)
+    text = output.read_text(encoding="utf-8")
+    assert "PRJ-STALE-FROM-OLD-REPORT" not in text
+    assert "项目编号/编码 | 未取得" in text

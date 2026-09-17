@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from tc.fields import scan_inline, scan_ocr_blocks
+from tc.field_decisions import decisions_for_fields, resolve_single_value
 
 
 def _content(alpha_project):
@@ -106,6 +108,69 @@ def test_authorization_scan_assigns_two_id_cards_by_visible_left_right_layout():
         "220123196503170641": "legal_rep_id",
         "220281198706113434": "bid_agent_id",
     }
+
+
+def test_ocr_spatial_candidate_retains_label_relation_and_bboxes():
+    """OCR 候选必须带可回看的标签关系和标签/值块坐标。"""
+    blocks = [
+        {"text": "统一社会信用代码", "confidence": 0.98,
+         "bbox": {"x": 0.10, "y": 0.20, "width": 0.20, "height": 0.03}},
+        {"text": "91350100M000100Y43", "confidence": 0.97,
+         "bbox": {"x": 0.32, "y": 0.20, "width": 0.30, "height": 0.03}},
+    ]
+
+    hits = scan_ocr_blocks(blocks, average_confidence=0.98, location_precision="block")
+    hit = next(h for h in hits if h.field == "uscc")
+
+    assert hit.label == "统一社会信用代码"
+    assert hit.label_relation == "same_line_right"
+    assert hit.label_bbox == blocks[0]["bbox"]
+    assert hit.value_bbox == blocks[1]["bbox"]
+
+
+def test_conflicting_core_candidates_are_kept_for_review_not_selected():
+    """同一范围的多值候选不得按频次或排序进入正式字段。"""
+    records = [
+        SimpleNamespace(
+            field="project_code", value_masked="PRJ-A", normalized="PRJ-A",
+            evidence_id="EV-A", confidence=1.0, low_confidence=False,
+            location={"kind": "pdf_page", "page": 1, "cover": True},
+        ),
+        SimpleNamespace(
+            field="project_code", value_masked="PRJ-B", normalized="PRJ-B",
+            evidence_id="EV-B", confidence=0.99, low_confidence=False,
+            location={"kind": "pdf_page", "page": 1, "cover": True},
+        ),
+    ]
+
+    decision = resolve_single_value(records, scope="project", field="project_code")
+
+    assert decision.status == "conflict"
+    assert decision.value is None
+    assert decision.evidence_ids == ("EV-A", "EV-B")
+    assert {item["normalized"] for item in decision.candidate_values} == {"PRJ-A", "PRJ-B"}
+
+
+def test_field_decisions_select_repeated_single_value_and_keep_evidence():
+    records = [
+        SimpleNamespace(
+            field="project_name", value_masked="项目甲", normalized="项目甲",
+            evidence_id="EV-2", confidence=0.91, low_confidence=False,
+            location={"kind": "pdf_page", "page": 1, "cover": True},
+        ),
+        SimpleNamespace(
+            field="project_name", value_masked="项目甲", normalized="项目甲",
+            evidence_id="EV-1", confidence=0.99, low_confidence=False,
+            location={"kind": "pdf_page", "page": 1, "cover": True},
+        ),
+    ]
+
+    decision = decisions_for_fields(records)[0]
+
+    assert decision.status == "selected"
+    assert decision.value == "项目甲"
+    assert decision.evidence_ids == ("EV-1", "EV-2")
+    assert decision.candidate_values[0]["evidence_ids"] == ["EV-1", "EV-2"]
 
 
 def test_multiple_uscc_candidates_are_not_arbitrarily_selected(alpha_project):

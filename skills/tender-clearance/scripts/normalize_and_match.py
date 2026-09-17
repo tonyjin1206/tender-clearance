@@ -27,6 +27,7 @@ from tc.models import (
     Party,
     Supplier,
 )
+from tc.field_decisions import SUPPLIER_FIELDS, is_match_eligible, resolve_single_value
 import yaml as _yaml
 
 from tc.normalize import company_search_key, name_similarity, normalize_company_name
@@ -105,13 +106,26 @@ def run(
     # ---- 主体字段归集 -------------------------------------------------------
     supplier_fields: dict[str, dict[str, list]] = {d: {} for d in supplier_dirs}
     for fr in content.fields:
-        if fr.low_confidence:
+        if fr.low_confidence or not is_match_eligible(fr):
             low_conf_fields.append(fr)
             continue
         group_dir = document_groups.get(fr.document_id, fr.supplier_dir)
         if not group_dir or group_dir not in supplier_fields:
             continue
         supplier_fields[group_dir].setdefault(fr.field, []).append(fr)
+
+    # 归组后的 supplier_dir 才是平铺上传的真实范围。对同一供应商的
+    # 多值字段重新做一次冲突门禁，不能只依赖提取阶段携带的目录名。
+    for directory, fields_by_name in supplier_fields.items():
+        for field in SUPPLIER_FIELDS:
+            items = fields_by_name.get(field, [])
+            if not items:
+                continue
+            decision = resolve_single_value(items, scope=f"supplier:{directory}", field=field)
+            if decision.status == "selected":
+                continue
+            low_conf_fields.extend(items)
+            fields_by_name[field] = []
 
     for d, supplier in suppliers.items():
         sf = supplier_fields[d]
@@ -121,8 +135,14 @@ def run(
         if grouping and grouping.get("status") == "resolved":
             declared = supplier.display_name
         else:
-            # 兼容旧版人工整理项目：优先 company_name 标签命中，其次公司名频次。
-            declared = _most_common([h.normalized or h.value_masked for h in company_hits if h.normalized])
+            # 公司名多候选时不得按频次/排序猜选；所有候选保留在 content/evidence，
+            # 主体名称留空并转人工复核。
+            company_values = {h.normalized or h.value_masked for h in company_hits if h.normalized or h.value_masked}
+            declared = next(iter(company_values)) if len(company_values) == 1 else None
+            if len(company_values) > 1:
+                supplier.confirmation = "candidate"
+                supplier.confirmation_note = f"发现多个不同的公司名称候选（{len(company_values)} 个），主体待人工确认"
+                notes.append(f"供应商 {d}：多个公司名称候选，未自动选择")
         supplier.declared_name = declared
         supplier.normalized_name = normalize_company_name(declared) if declared else None
         supplier.name_search_key = company_search_key(declared) if declared else None
@@ -212,16 +232,6 @@ def _valid_uscc(code: str) -> bool:
     from tc.normalize import uscc_valid
 
     return uscc_valid(code)
-
-
-def _most_common(values: list[str]) -> str | None:
-    if not values:
-        return None
-    counts: dict[str, int] = {}
-    for v in values:
-        counts[v] = counts.get(v, 0) + 1
-    best = max(counts.items(), key=lambda kv: (kv[1], len(kv[0])))
-    return best[0]
 
 
 PARTY_ROLES = {

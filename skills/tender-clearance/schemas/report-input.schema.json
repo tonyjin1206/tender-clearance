@@ -4,7 +4,7 @@
   "title": "Tender Clearance Report Input",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "run", "facts", "quality", "source_artifacts"],
+  "required": ["schema_version", "run", "facts", "field_decisions", "quality", "source_artifacts"],
   "properties": {
     "schema_version": {"const": "tender-clearance.report-input.v1"},
     "run": {"type": "object"},
@@ -27,6 +27,36 @@
           "evidence_id": {"type": "string"},
           "review_state": {"enum": ["candidate", "human_review_required"]},
           "review_reason": {"type": "string"}
+        }
+      }
+    },
+    "field_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "field", "status", "value", "normalized", "evidence_ids", "candidate_values"],
+        "properties": {
+          "scope": {"type": "string"},
+          "field": {"type": "string"},
+          "status": {"enum": ["selected", "missing", "conflict", "needs_manual_review"]},
+          "value": {"type": ["string", "null"]},
+          "normalized": {"type": ["string", "null"]},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}},
+          "candidate_values": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "normalized", "evidence_ids"],
+              "properties": {
+                "value": {"type": "string"},
+                "normalized": {"type": ["string", "null"]},
+                "evidence_ids": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          },
+          "reason": {"type": "string"}
         }
       }
     },

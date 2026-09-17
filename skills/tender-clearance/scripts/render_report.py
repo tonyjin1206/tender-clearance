@@ -47,6 +47,7 @@ from tc.projio import ProjectError, ensure_output_dirs, load_project_config
 from tc.srm_gate import SrmReportGateError, validate_srm_report_gate
 from tc.normalize import normalize_company_name
 from tc.process_artifacts import build_process_artifacts, ocr_completion, validate_report_input
+from tc.field_decisions import decisions_for_fields
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "清标报告.md.jinja"
 
@@ -154,7 +155,11 @@ def run(
         typer.secho(f"[提示] PDF 生成失败（不影响验收基准输出）：{exc}", fg=typer.colors.YELLOW)
 
     _render_evidence_csv(evidence, inventory, out_dir / "证据索引.csv")
-    _render_review_csv(findings, entities, low_conf_ids, inventory, content, out_dir / "人工复核清单.csv")
+    _render_review_csv(
+        findings, entities, low_conf_ids, inventory, content,
+        out_dir / "人工复核清单.csv",
+        field_decisions=report_input.get("field_decisions", []),
+    )
     if want_docx:
         try:
             _render_docx(ctx, out_dir / "清标报告.docx")
@@ -323,7 +328,8 @@ def _cover_tenderer_candidates(content: ContentFile, inventory: InventoryFile,
         if subject_key(value) in supplier_keys:
             continue
         counts[value] = counts.get(value, 0) + 1
-    return [value for value, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+    # 多个招标人候选不得全部拼接进正式字段；交由字段决策层人工复核。
+    return [value for value, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))] if len(counts) == 1 else []
 
 
 def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence, low_conf_ids, content, project_dir: Path, bid_analysis: dict | None = None, report_input: dict | None = None) -> dict:
@@ -333,9 +339,17 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
     quote_by_supplier = {str(x.get("supplier_id")): x for x in (bid_analysis or {}).get("suppliers", [])}
     # 新口径：公共项只接受封面第一页；主体信息只接受商务标。
     project_values: dict[str, list[str]] = {k: [] for k in ("tenderer", "project_name", "project_code", "bid_date")}
-    for fr in (report_input or {}).get("facts", []):
-        if fr.get("field") in project_values and fr.get("normalized"):
-            project_values[fr["field"]].append(str(fr.get("value") or ""))
+    decision_rows = (report_input or {}).get("field_decisions", [])
+    if not decision_rows:
+        decision_rows = [d.as_dict() for d in decisions_for_fields(content.fields)]
+    for decision in decision_rows:
+        if (
+            decision.get("scope") == "project"
+            and decision.get("field") in project_values
+            and decision.get("status") == "selected"
+            and decision.get("value")
+        ):
+            project_values[decision["field"]].append(str(decision["value"]))
     project_identity = {k: sorted(set(v)) for k, v in project_values.items()}
     # 商务标首页常以标题直接出现招标人，没有“招标人：”标签；在已提取
     # 公共字段为空时，使用同页公司名候选补齐，但不能把投标人冒充招标人。
@@ -364,8 +378,12 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
     for s in sups:
         def party(role: str, attr: str) -> str:
             vals = [getattr(p, attr) for p in entities.parties if p.supplier_id == s.supplier_id and p.role == role]
-            vals = [str(v) for v in vals if v]
-            return "、".join(sorted(set(vals))) or "未取得"
+            values = sorted({str(v) for v in vals if v})
+            if len(values) == 1:
+                return values[0]
+            if len(values) > 1:
+                return "待人工复核（多个候选）"
+            return "未取得"
         srm_identity = srm_registration_by_supplier.get(s.supplier_id, {})
         srm_fields = srm_identity.get("fields", {}) if isinstance(srm_identity, dict) else {}
         if not isinstance(srm_fields, dict):
@@ -379,7 +397,7 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         business_rows.append({
             "supplier": names.get(s.supplier_id, _display_company_name(s.display_name)),
             "company": _display_company_name(s.declared_name) or "未取得",
-            "uscc": srm_uscc or s.uscc or ("候选：" + "、".join(s.uscc_candidates) if s.uscc_candidates else "未取得"),
+            "uscc": srm_uscc or s.uscc or ("待人工复核（多个候选）" if len(s.uscc_candidates) > 1 else "未取得"),
             "legal_name": srm_legal_name or party("legal_rep", "name"),
             "legal_id": srm_legal_id or party("legal_rep", "id_mask"),
             "agent_name": party("bid_agent", "name"),
@@ -600,7 +618,10 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
         return sorted({c.raw_masked for c in entities.contacts if c.supplier_id == sup_id and c.kind == kind}) or ["—"]
 
     def parties_of(sup_id: str, role: str) -> list[str]:
-        return sorted({p.name for p in entities.parties if p.supplier_id == sup_id and p.role == role}) or ["—"]
+        values = sorted({p.name for p in entities.parties if p.supplier_id == sup_id and p.role == role})
+        if len(values) <= 1:
+            return values or ["—"]
+        return ["待人工复核（多个候选）"]
 
     cross_tables = []
     if sups:
@@ -852,7 +873,8 @@ def _loc_str(ev: Evidence) -> str:
     return " ".join(parts)[:300]
 
 
-def _render_review_csv(findings_file, entities, low_conf_ids, inventory, content, path: Path) -> None:
+def _render_review_csv(findings_file, entities, low_conf_ids, inventory, content, path: Path,
+                       field_decisions: list[dict] | None = None) -> None:
     names = _sup_name(entities)
     with path.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.writer(fh)
@@ -864,6 +886,24 @@ def _render_review_csv(findings_file, entities, low_conf_ids, inventory, content
                             f.fact, f.rule_id, f.evidence_strength, f.recommendation])
         for eid in sorted(low_conf_ids):
             w.writerow(["低置信度字段", eid, "—", "—", "OCR/低置信度提取结果未参与匹配，需人工核对原件", "低置信度", "D", "对照原件核对字段值"])
+        field_labels = {
+            "project_name": "项目名称", "tenderer": "招标人", "project_code": "项目编号",
+            "bid_date": "投标日期", "company_name": "投标人", "uscc": "统一社会信用代码",
+            "legal_rep_name": "法定代表人", "legal_rep_id": "法定代表人身份证号",
+            "bid_agent_name": "授权代表", "bid_agent_id": "授权代表身份证号",
+        }
+        for decision in field_decisions or []:
+            if decision.get("status") == "selected":
+                continue
+            candidates = decision.get("candidate_values") or []
+            candidate_text = "、".join(str(x.get("value") or "") for x in candidates[:8]) or "未取得"
+            scope = str(decision.get("scope") or "")
+            supplier = scope.removeprefix("supplier:") if scope.startswith("supplier:") else "项目"
+            w.writerow([
+                "字段冲突/缺口", f"FIELD-{decision.get('scope')}-{decision.get('field')}", "—", supplier,
+                f"{field_labels.get(decision.get('field'), decision.get('field'))}：{candidate_text}；未进入正式报告单值字段",
+                decision.get("reason") or decision.get("status"), "—", "核对原件、页码/坐标和标签关系后确认唯一值",
+            ])
         for a in inventory.anomalies:
             w.writerow(["清单异常", "—", "—", "—", a.detail or a.anomaly, a.anomaly, "—", "人工检查文件并补录"])
         for d in inventory.documents:
@@ -890,7 +930,7 @@ def _render_docx(ctx: dict, path: Path) -> None:
     p.runs[0].font.size = Pt(9)
     d.add_heading("1. 封面信息页", level=1)
     d.add_paragraph("招标人：" + "；".join(ctx["project_identity"]["tenderer"] or ["未取得"]))
-    d.add_paragraph("项目名称：" + "；".join(ctx["project_identity"]["project_name"] or [ctx["project"].project_name]))
+    d.add_paragraph("项目名称：" + "；".join(ctx["project_identity"]["project_name"] or ["未取得"]))
     d.add_paragraph("投标人：" + "、".join(ctx["summary"]["supplier_names"]))
     d.add_heading("2. 基本信息页", level=1)
     for r in ctx["business_rows"]:

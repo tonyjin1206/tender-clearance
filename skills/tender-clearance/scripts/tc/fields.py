@@ -48,6 +48,10 @@ class FieldHit:
     context: str = ""  # 命中所依据的标签或说明
     confidence: float = 1.0
     via_label: bool = False
+    label: str | None = None
+    label_relation: str | None = None
+    label_bbox: dict[str, float] | None = None
+    value_bbox: dict[str, float] | None = None
 
 
 FIELD_NAMES = {
@@ -159,12 +163,16 @@ def scan_inline(text: str) -> list[FieldHit]:
         return any(not (span[1] <= s or span[0] >= e) for s, e in occupied_spans)
 
     def add(field: str, value: str, context: str, via: bool, conf: float = 1.0,
-            span: tuple[int, int] | None = None, occupy: bool = False) -> None:
+            span: tuple[int, int] | None = None, occupy: bool = False,
+            label: str | None = None, label_relation: str | None = None) -> None:
         key = (field, value.strip())
         if key in seen_values:
             return
         seen_values.add(key)
-        hits.append(FieldHit(field=field, value=value.strip(), context=context, via_label=via, confidence=conf))
+        hits.append(FieldHit(
+            field=field, value=value.strip(), context=context, via_label=via,
+            confidence=conf, label=label, label_relation=label_relation,
+        ))
         if span and occupy:
             occupied_spans.append(span)
 
@@ -188,7 +196,8 @@ def scan_inline(text: str) -> list[FieldHit]:
                 value = _clean_name(value)
                 if not _NAME_CHARS.match(value):
                     continue
-            add(fld, value, m.group(0)[:40], True)
+            label_text = re.sub(r"\s*[:：].*$", "", m.group(0)).strip()
+            add(fld, value, m.group(0)[:40], True, label=label_text, label_relation="inline_label")
 
     # 3) 独立格式值（跳过已被身份证占用的区间；跳过同值重复）
     for rx, fld in _PURE_VALUE_RES:
@@ -228,6 +237,7 @@ def scan_ocr_blocks(
         for hit in hits:
             hit.confidence = min(hit.confidence, page_conf, 0.5)
             hit.context = (hit.context + "；" if hit.context else "") + "OCR page_only 降级候选"
+            hit.label_relation = hit.label_relation or "page_only_fallback"
         return hits
 
     # Vision 等 Provider 常把“投标人：公司名”作为一个完整文本块返回，
@@ -240,6 +250,10 @@ def scan_ocr_blocks(
         if block_conf:
             hit.confidence = min(hit.confidence, max(block_conf))
         hit.context = (hit.context + "；" if hit.context else "") + "OCR inline block fallback"
+        hit.label_relation = hit.label_relation or "inline_block"
+        matching_blocks = [b for b in clean if hit.value in str(b.get("text", "")) and b.get("bbox")]
+        if matching_blocks:
+            hit.value_bbox = dict(matching_blocks[0]["bbox"])
 
     labels: list[tuple[int, str, str]] = []
     full_text = "\n".join(str(b.get("text", "")) for b in clean)
@@ -329,6 +343,11 @@ def scan_ocr_blocks(
         used.add(key)
         selected.confidence = conf
         selected.context = f"OCR 空间配对：{label_text[:30]} → {value[:60]}"
+        selected.label = label_text
+        selected.label_relation = "same_line_right" if abs(center(value_block)[1] - ly) <= max(lh * 2.5, 0.045) else "below_near"
+        selected.label_bbox = dict(label_box)
+        if value_block.get("bbox"):
+            selected.value_bbox = dict(value_block["bbox"])
         hits.append(selected)
     seen = {(hit.field, hit.value) for hit in hits}
     spatial_name_fields = {hit.field for hit in hits if hit.field in {"legal_rep_name", "bid_agent_name"}}
@@ -388,7 +407,10 @@ def _name_after_label(text: str, seen_values: set) -> list[FieldHit]:
                 continue
             occupied.append(span)
             seen_values.add((fld, name))
-            hits.append(FieldHit(field=fld, value=name, context=m.group(1), via_label=True))
+            hits.append(FieldHit(
+                field=fld, value=name, context=m.group(1), via_label=True,
+                label=m.group(1), label_relation="inline_label",
+            ))
     return hits
 
 
@@ -422,11 +444,11 @@ def extract_from_cells(cells: list[list[str]], sheet_name: str) -> list[FieldHit
     used: set[str] = set()
 
     # 1) 标签单元格登记
-    label_at: dict[str, str] = {}
+    label_at: dict[str, tuple[str, str]] = {}
     for coord, text in cells:
         for rx, fld in _LABEL_RES:
             if rx.match(text):
-                label_at[coord] = fld
+                label_at[coord] = (fld, text)
                 break
 
     # 2) 纯格式值（USCC / email / phone / company / id）
@@ -440,7 +462,7 @@ def extract_from_cells(cells: list[list[str]], sheet_name: str) -> list[FieldHit
                     used.add(coord)
 
     # 3) 标签 → 右邻/下邻值
-    for coord, fld in label_at.items():
+    for coord, (fld, label_text) in label_at.items():
         m = _CELL_RE.match(coord)
         if not m:
             continue
@@ -465,7 +487,11 @@ def extract_from_cells(cells: list[list[str]], sheet_name: str) -> list[FieldHit
                         break
             elif sub and any(h.field in ("legal_rep_name", "bid_agent_name", "shareholder_name", "contact_name", "company_name") for h in sub):
                 norm_fld = next(h.field for h in sub if h.field in ("legal_rep_name", "bid_agent_name", "shareholder_name", "contact_name", "company_name"))
-            hits.append(FieldHit(field=norm_fld, value=value, context=f"{sheet_name}!{coord}→{cand}", via_label=True, confidence=0.9))
+            hits.append(FieldHit(
+                field=norm_fld, value=value, context=f"{sheet_name}!{coord}→{cand}",
+                via_label=True, confidence=0.9, label=label_text,
+                label_relation="xlsx_adjacent",
+            ))
             break
     return hits
 

@@ -6,8 +6,8 @@
 | 项目 | 内容 |
 |---|---|
 | 招标人 | {{ project_identity.tenderer | join('；') or '未取得' }} |
-| 项目名称 | {{ project_identity.project_name | join('；') or project.project_name }} |
-| 项目编号/编码 | {{ project_identity.project_code | join('；') or project.project_id }} |
+| 项目名称 | {{ project_identity.project_name | join('；') or '未取得' }} |
+| 项目编号/编码 | {{ project_identity.project_code | join('；') or '未取得' }} |
 | 投标日期/截止时间 | {{ project_identity.bid_date | join('；') or '未取得' }} |
 | 投标人 | {{ summary.supplier_names | join('、') or '未取得' }} |
 
@@ -34,8 +34,8 @@
 
 | 项目 | 内容 |
 |---|---|
-| 项目名称 | {{ project_identity.project_name | join('；') or project.project_name }} |
-| 项目编号 | {{ project_identity.project_code | join('；') or project.project_id }} |
+| 项目名称 | {{ project_identity.project_name | join('；') or '未取得' }} |
+| 项目编号 | {{ project_identity.project_code | join('；') or '未取得' }} |
 | 清标依据 | 招标文件、工程量清单、施工图纸及各投标人的投标文件；采购文件具体资格/否决条款：{% if project.procurement_rules_source == 'unspecified' %}未提供{% else %}{{ project.procurement_rules_source }}{% endif %} |
 | 清标小组 | 未取得，待清标组织补充成员及专业分工 |
 | 投标文件家数 | {{ summary.supplier_count }} 家；文件清单中共 {{ summary.bid_docs }} 份投标文件 |

@@ -12,10 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from .canon import write_json
+from .field_decisions import decisions_for_fields
 from .models import ContentFile, EntitiesFile, FindingsFile, InventoryFile, OCRJobFile, OCRResultFile
 
 
-_REPORT_LOCATION_KEYS = {"kind", "page", "sheet", "cell", "table", "row", "col", "index", "cover"}
+_REPORT_LOCATION_KEYS = {
+    "kind", "page", "sheet", "cell", "table", "row", "col", "index", "cover",
+    "label", "label_relation", "via_label",
+}
 _OCR_TERMINAL_STATUSES = {"succeeded", "failed", "blocked", "not_supported", "cancelled"}
 REPORT_INPUT_FORBIDDEN_KEYS = frozenset({
     "text", "raw_text", "ocr_text", "blocks", "confidence", "average_confidence",
@@ -61,6 +65,20 @@ def _field_fact(field: Any, *, include_quality: bool) -> dict[str, Any]:
         fact["confidence"] = field.confidence
         fact["low_confidence"] = field.low_confidence
     return fact
+
+
+def _report_decision(decision: Any) -> dict[str, Any]:
+    """保留候选值和证据引用，但不把 OCR 坐标/Provider 细节交给报告上下文。"""
+    data = decision.as_dict()
+    data["candidate_values"] = [
+        {
+            key: value
+            for key, value in candidate.items()
+            if key != "locations"
+        }
+        for candidate in data.get("candidate_values", [])
+    ]
+    return data
 
 
 def ocr_completion(project_dir: Path) -> dict[str, Any]:
@@ -124,10 +142,12 @@ def build_process_artifacts(
     interim = project_dir / "output" / "interim"
     process_facts = [_field_fact(field, include_quality=True) for field in content.fields]
     report_facts = [_field_fact(field, include_quality=False) for field in content.fields]
+    decisions = decisions_for_fields(content.fields)
     completion = ocr_completion(project_dir)
     expected_ocr_pages = completion["expected_jobs"]
     completed_ocr_pages = completion["succeeded_jobs"]
     review_count = sum(1 for field in content.fields if field.low_confidence)
+    review_count += sum(1 for decision in decisions if decision.status != "selected")
 
     process_workpaper: dict[str, Any] = {
         "schema_version": "tender-clearance.process-workpaper.v1",
@@ -144,6 +164,7 @@ def build_process_artifacts(
             for doc in content.documents
         ],
         "facts": process_facts,
+        "field_decisions": [decision.as_dict() for decision in decisions],
         "quality": {
             "expected_ocr_pages": expected_ocr_pages,
             "completed_ocr_pages": completed_ocr_pages,
@@ -164,6 +185,7 @@ def build_process_artifacts(
         "schema_version": "tender-clearance.report-input.v1",
         "run": inventory.run.model_dump(mode="json"),
         "facts": report_facts,
+        "field_decisions": [_report_decision(decision) for decision in decisions],
         "quality": {
             "expected_ocr_pages": expected_ocr_pages,
             "completed_ocr_pages": completed_ocr_pages,

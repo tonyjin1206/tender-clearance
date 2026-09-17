@@ -4,12 +4,13 @@
   "title": "Tender Clearance Process Workpaper",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "run", "documents", "facts", "quality", "source_artifacts"],
+  "required": ["schema_version", "run", "documents", "facts", "field_decisions", "quality", "source_artifacts"],
   "properties": {
     "schema_version": {"const": "tender-clearance.process-workpaper.v1"},
     "run": {"type": "object"},
     "documents": {"type": "array", "items": {"type": "object"}},
     "facts": {"type": "array", "items": {"type": "object"}},
+    "field_decisions": {"type": "array", "items": {"type": "object"}},
     "quality": {
       "type": "object",
       "additionalProperties": false,

@@ -645,6 +645,17 @@ def _looks_like_cover(text: str) -> bool:
 def _build_field_record(
     hit, builder: EvidenceBuilder, doc, location: dict[str, Any], method: str, confidence: float
 ) -> FieldRecord:
+    # 标签/版面关系是候选证据的一部分，不能只埋在不可检索的 context 文本里。
+    # OCR 坐标留在证据和过程底稿；report-input 会按防火墙规则裁剪。
+    location = dict(location)
+    if hit.label:
+        location["label"] = hit.label
+    if hit.label_relation:
+        location["label_relation"] = hit.label_relation
+    if hit.label_bbox:
+        location["label_bbox"] = dict(hit.label_bbox)
+    if hit.value_bbox:
+        location["value_bbox"] = dict(hit.value_bbox)
     field = hit.field
     value = hit.value
     digest: str | None = None
