@@ -417,7 +417,13 @@ def _scan_ocr_result(
     )
     hits = [*template_hits, *hits]
     out: list[FieldRecord] = []
+    ocr_text = "\n".join(str(block.get("text", "")) for block in blocks)
     for hit in hits:
+        # 公共项只能来自封面第一页；OCR 路径也必须遵守与文本层相同的门禁，
+        # 避免授权书或合同条款中的“项目名称/招标人”污染报告封面字段。
+        if hit.field in {"project_name", "project_code", "tenderer", "bid_date"}:
+            if result.page != 1 or not _looks_like_cover(ocr_text):
+                continue
         location: dict[str, Any] = {
             "kind": "pdf_page" if doc.media_type == "application/pdf" else "image_page",
             "page": result.page,
@@ -512,6 +518,7 @@ def _extract_pdf(
                 job = job_for_page(
                     document_id=doc.document_id, source_sha256=doc.sha256, page=pno,
                     page_image_sha256=page_image_hash, input_ref=safe_input_ref(project_dir, path, pno),
+                    priority=_ocr_priority(doc, pno, page.text, identity_only=identity_only),
                 )
                 jobs.append(job)
                 if cfg.ocr_provider == "mock":
@@ -536,11 +543,24 @@ def _extract_pdf(
             job = job_for_page(
                 document_id=doc.document_id, source_sha256=doc.sha256, page=pno,
                 page_image_sha256=page_image_hash, input_ref=safe_input_ref(project_dir, path, pno),
+                priority=_ocr_priority(doc, pno, page.text, identity_only=identity_only),
             )
             if job.job_id not in {j.job_id for j in jobs}:
                 jobs.append(job)
         dc.text_units += text_units
     return dc, fields, anomalies, jobs, mock_results, parsed
+
+
+def _ocr_priority(doc, page: int, text: str, *, identity_only: bool = False) -> str:
+    """标记可先识别的身份页，供宿主 OCR 调度关键路径。"""
+    if identity_only or page <= 3:
+        return "identity_fast"
+    compact = re.sub(r"\s+", "", text or "")
+    markers = (
+        "营业执照", "统一社会信用代码", "供应商名称", "投标人名称", "单位名称",
+        "投标单位", "法定代表人", "法人代表", "授权代表", "资质证书",
+    )
+    return "identity_fast" if any(marker in compact for marker in markers) else "full"
 
 
 # --------------------------------------------------------------------- DOCX

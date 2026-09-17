@@ -1,5 +1,20 @@
 # 验证记录（VALIDATION）
 
+## 2026-09-17：v0.4.0 身份先行、SRM 人工登录与报告字段修复
+
+- SRM 默认改为可见浏览器人工登录；不再在首轮交互或主入口要求密码。运行时凭据保留为
+  `SRM_BROWSER_LOGIN_MODE=runtime` 的显式兼容模式。
+- OCR 任务新增 `priority=identity_fast/full`：封面、商务身份页和前 3 页可先调度；新增
+  `prepare_identity.py` 生成身份快速候选，全文 OCR 继续后台处理。
+- SRM 查询改为准确公司名称优先、统一社会信用代码二次核验；分公司/支公司保留为独立候选，
+  不因模糊匹配判重。外部查询逐主体原子保存 `external.json`、证据和 SRM 断点。
+- OCR 公共项增加封面第一页门禁，并支持封面无标签标题恢复；报告过程底稿按
+  `supplier-grouping.json` 回填供应商范围。
+- 真实样本临时副本验收：报告首页正确恢复招标人、项目名称和项目编号，3 家投标人字段均按归组落位。
+- 回归验证：**163 passed**；`git diff --check` 通过；Core 项目校验通过。
+
+验证日期：2026-09-17　环境：macOS / Python 3.12.13 / uv venv
+
 ## 2026-09-16：v0.3.0 OCR 进度可观测性与 Provider 优化
 
 - OCR Provider 默认使用质量优先的 `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`，规整

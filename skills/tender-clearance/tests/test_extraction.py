@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from tc.fields import scan_inline, scan_ocr_blocks, scan_template_metric_blocks
 from tc.field_decisions import decisions_for_fields, resolve_single_value
+from extract_content import _ocr_priority
 
 
 def _content(alpha_project):
@@ -126,6 +127,44 @@ def test_ocr_spatial_candidate_retains_label_relation_and_bboxes():
     assert hit.label_relation == "same_line_right"
     assert hit.label_bbox == blocks[0]["bbox"]
     assert hit.value_bbox == blocks[1]["bbox"]
+
+
+def test_ocr_project_fields_reject_body_noise_values():
+    blocks = [
+        {"text": "招标人", "confidence": 0.98,
+         "bbox": {"x": 0.10, "y": 0.20, "width": 0.12, "height": 0.03}},
+        {"text": "1）将本项目投标保证金汇入为该项目设置的指定账户", "confidence": 0.98,
+         "bbox": {"x": 0.25, "y": 0.20, "width": 0.55, "height": 0.03}},
+        {"text": "项目名称", "confidence": 0.98,
+         "bbox": {"x": 0.10, "y": 0.30, "width": 0.12, "height": 0.03}},
+        {"text": "单价", "confidence": 0.98,
+         "bbox": {"x": 0.25, "y": 0.30, "width": 0.10, "height": 0.03}},
+    ]
+    hits = scan_ocr_blocks(blocks, average_confidence=0.98, location_precision="block")
+    assert not [hit for hit in hits if hit.field in {"tenderer", "project_name"}]
+
+
+def test_ocr_cover_title_recovers_unlabelled_project_and_tenderer():
+    blocks = [
+        {"text": "富奥汽车零部件股份有限公司传动轴分公司", "confidence": 0.98,
+         "bbox": {"x": 0.20, "y": 0.20, "width": 0.50, "height": 0.03}},
+        {"text": "含油污泥鉴定国内邀请招标项目", "confidence": 0.98,
+         "bbox": {"x": 0.30, "y": 0.25, "width": 0.40, "height": 0.03}},
+        {"text": "项目编号：CG2608110001", "confidence": 0.98,
+         "bbox": {"x": 0.35, "y": 0.32, "width": 0.30, "height": 0.03}},
+        {"text": "投标文件", "confidence": 0.98,
+         "bbox": {"x": 0.42, "y": 0.46, "width": 0.15, "height": 0.03}},
+    ]
+    hits = scan_ocr_blocks(blocks, average_confidence=0.98, location_precision="block")
+    assert any(h.field == "tenderer" and "传动轴分公司" in h.value for h in hits)
+    assert any(h.field == "project_name" and h.value.endswith("国内邀请招标项目") for h in hits)
+
+
+def test_identity_pages_are_marked_for_fast_ocr_priority():
+    doc = SimpleNamespace(bid_subtype="business")
+    assert _ocr_priority(doc, 1, "") == "identity_fast"
+    assert _ocr_priority(doc, 8, "统一社会信用代码") == "identity_fast"
+    assert _ocr_priority(doc, 8, "技术参数与响应") == "full"
 
 
 def test_template_metric_anchor_pairs_only_nearby_value_block():

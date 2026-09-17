@@ -30,10 +30,11 @@ def test_company_candidates_ignore_empty_and_operation_rows():
     ]
 
 
-def test_company_lookup_query_removes_bid_document_stamp_suffix_only():
+def test_company_lookup_query_prefers_exact_name_and_removes_stamp_suffix():
     assert _company_lookup_query(QuerySubject("S1", "长春市赢天环保科技有限公司(公章)", None)) == "长春市赢天环保科技有限公司"
     assert _company_lookup_query(QuerySubject("S1", "甲 公司", None)) == "甲公司"
-    assert _company_lookup_query(QuerySubject("S1", "长春市赢天环保科技有限公司(公章)", "91310000MA00000002")) == "91310000MA00000002"
+    assert _company_lookup_query(QuerySubject("S1", "长春市赢天环保科技有限公司(公章)", "91310000MA00000002")) == "长春市赢天环保科技有限公司"
+    assert _company_lookup_query(QuerySubject("S1", "", "91310000MA00000002")) == "91310000MA00000002"
 
 
 def test_company_name_cleanup_preserves_branch_suffix():
@@ -164,7 +165,7 @@ def test_subject_search_records_home_company_lookup_evidence():
     )
 
     assert result.confirmation == "confirmed"
-    assert calls == ["open", "fill:91310000MA00000001", "click", "details"]
+    assert calls == ["open", "fill:甲公司", "click", "details"]
     assert "入口=主页>查企业" in (result.detail or "")
 
 

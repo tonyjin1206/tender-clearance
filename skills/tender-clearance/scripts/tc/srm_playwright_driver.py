@@ -84,10 +84,8 @@ def _clean_company_name(value: str | None) -> str:
 
 
 def _company_lookup_query(subject: QuerySubject) -> str:
-    """生成 SRM 查企业输入值；保留原主体，去除投标文件盖章后缀。"""
-    if subject.uscc:
-        return subject.uscc
-    return _clean_company_name(subject.name)
+    """生成 SRM 查企业输入值：准确全称优先，信用代码只作二次核验。"""
+    return _clean_company_name(subject.name) or str(subject.uscc or "").strip().upper()
 
 
 _COMPANY_NAME_KEYS = (
@@ -155,24 +153,18 @@ def _select_company_candidate(
     但多个完全同名主体或多个相同信用代码仍必须人工复核。
     """
     query_norm = _norm(_clean_company_name(query))
-    if subject_uscc:
-        uscc_norm = subject_uscc.upper()
-        exact_uscc = [r for r in rows if str(r.get("uscc") or "").upper() == uscc_norm]
-        if len(exact_uscc) != 1:
-            return None
-        # 两个主体键同时提供时，USCC 不能掩盖同名冲突；必须是同一条精确
-        # 结果。这样“名称相同但代码不同”会转人工，而不是静默选中一条。
-        if query_norm:
-            exact_name = [
-                r for r in rows
-                if _norm(_clean_company_name(r.get("name"))) == query_norm
-            ]
-            if len(exact_name) != 1 or exact_name[0] != exact_uscc[0]:
-                return None
-        return exact_uscc[0]
     exact_name = [r for r in rows if _norm(_clean_company_name(r.get("name"))) == query_norm]
     if len(exact_name) == 1:
-        return exact_name[0]
+        selected = exact_name[0]
+        # 准确名称是第一主体键；只有当 SRM 行明确带出代码时，才用代码
+        # 做冲突校验。代码缺失不把一个唯一准确名称误判成“无结果”。
+        if subject_uscc and selected.get("uscc") and str(selected["uscc"]).upper() != subject_uscc.upper():
+            return None
+        return selected
+    if subject_uscc:
+        exact_uscc = [r for r in rows if str(r.get("uscc") or "").upper() == subject_uscc.upper()]
+        if len(exact_uscc) == 1 and not exact_name:
+            return exact_uscc[0]
     return None
 
 
@@ -350,8 +342,7 @@ class PlaywrightSrmDriver:
     def search_subject(self, subject: QuerySubject) -> BrowserSubjectResult:
         """主页 → 查企业 → 搜索框 → 唯一命中 → 企业详情/画像主体核对。"""
         query = _company_lookup_query(subject)
-        # 查询框优先使用 USCC，但主体核对仍必须保留用户提供的完整名称；
-        # 否则会把信用代码误当作名称键，漏掉名称/代码冲突。
+        # 查询框优先使用准确公司全称；统一社会信用代码只用于结果核验。
         name_query = _clean_company_name(subject.name) or query
 
         # 批量查询中，上一家供应商的画像 iframe/页签可能仍覆盖在查企业

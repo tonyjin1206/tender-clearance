@@ -67,7 +67,9 @@ def job_for_page(
     page: int,
     page_image_sha256: str,
     input_ref: str,
+    priority: str = "full",
 ) -> OCRJob:
+    identity_fast = priority == "identity_fast"
     return OCRJob(
         contract_version="ocr-job.v1",
         job_id=stable_id("OCRJ", {
@@ -81,6 +83,9 @@ def job_for_page(
         page=page,
         page_image_sha256=page_image_sha256,
         input_ref=input_ref,
+        mode="fast" if identity_fast else "accurate",
+        priority="identity_fast" if identity_fast else "full",
+        purpose="supplier_identity_fast_scan" if identity_fast else "tender_clearance_field_candidates",
     )
 
 
@@ -123,4 +128,3 @@ def safe_input_ref(project_dir: Path, path: Path, page: int) -> str:
 
 def result_to_json(result: OCRResult) -> dict[str, Any]:
     return result.model_dump(mode="json")
-

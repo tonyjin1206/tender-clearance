@@ -45,13 +45,13 @@ def _review_state(field: Any) -> tuple[str, str | None]:
     return "candidate", None
 
 
-def _field_fact(field: Any, *, include_quality: bool) -> dict[str, Any]:
+def _field_fact(field: Any, *, include_quality: bool, supplier_dir: str | None = None) -> dict[str, Any]:
     state, reason = _review_state(field)
     fact: dict[str, Any] = {
         "fact_id": field.evidence_id,
         "document_id": field.document_id,
         "relative_path": field.relative_path,
-        "supplier_dir": field.supplier_dir,
+        "supplier_dir": supplier_dir if supplier_dir is not None else field.supplier_dir,
         "field": field.field,
         "value": field.value_masked,
         "normalized": field.normalized,
@@ -141,9 +141,32 @@ def build_process_artifacts(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """写入过程底稿和不含质量数值/OCR 块的报告安全输入。"""
     interim = project_dir / "output" / "interim"
-    process_facts = [_field_fact(field, include_quality=True) for field in content.fields]
-    report_facts = [_field_fact(field, include_quality=False) for field in content.fields]
-    decisions = decisions_for_fields(content.fields)
+    grouping_path = interim / "supplier-grouping.json"
+    document_groups: dict[str, str] = {}
+    if grouping_path.exists():
+        try:
+            grouping = json.loads(grouping_path.read_text(encoding="utf-8"))
+            if grouping.get("status") == "resolved":
+                document_groups = {
+                    str(item["document_id"]): str(item["group_id"])
+                    for item in grouping.get("documents", [])
+                    if item.get("status") == "assigned" and item.get("group_id")
+                }
+        except (OSError, ValueError, TypeError):
+            document_groups = {}
+
+    def effective_supplier_dir(field: Any) -> str | None:
+        return getattr(field, "supplier_dir", None) or document_groups.get(field.document_id)
+
+    process_facts = [
+        _field_fact(field, include_quality=True, supplier_dir=effective_supplier_dir(field))
+        for field in content.fields
+    ]
+    report_facts = [
+        _field_fact(field, include_quality=False, supplier_dir=effective_supplier_dir(field))
+        for field in content.fields
+    ]
+    decisions = decisions_for_fields(content.fields, document_groups=document_groups)
     completion = ocr_completion(project_dir)
     template_spec_path = interim / "template-spec.json"
     template_spec: dict[str, Any] = {}

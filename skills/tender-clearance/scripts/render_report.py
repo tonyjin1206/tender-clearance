@@ -341,7 +341,21 @@ def _build_context(cfg, inventory, entities, meta, ext, findings_file, evidence,
     project_values: dict[str, list[str]] = {k: [] for k in ("tenderer", "project_name", "project_code", "bid_date")}
     decision_rows = (report_input or {}).get("field_decisions", [])
     if not decision_rows:
-        decision_rows = [d.as_dict() for d in decisions_for_fields(content.fields)]
+        document_groups: dict[str, str] = {}
+        grouping_path = project_dir / "output/interim/supplier-grouping.json"
+        if grouping_path.exists():
+            try:
+                grouping = load_json(grouping_path)
+                document_groups = {
+                    str(item["document_id"]): str(item["group_id"])
+                    for item in grouping.get("documents", [])
+                    if item.get("status") == "assigned" and item.get("group_id")
+                }
+            except (OSError, ValueError, TypeError):
+                document_groups = {}
+        decision_rows = [d.as_dict() for d in decisions_for_fields(
+            content.fields, document_groups=document_groups
+        )]
     for decision in decision_rows:
         if (
             decision.get("scope") == "project"

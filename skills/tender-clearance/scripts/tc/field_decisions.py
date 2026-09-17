@@ -140,14 +140,19 @@ def resolve_single_value(records: Iterable[Any], *, scope: str, field: str) -> F
     )
 
 
-def decisions_for_fields(records: Iterable[Any]) -> list[FieldDecision]:
+def decisions_for_fields(
+    records: Iterable[Any], *, document_groups: dict[str, str] | None = None
+) -> list[FieldDecision]:
     """生成项目级和供应商级正式字段决策。"""
+    document_groups = document_groups or {}
     grouped: dict[tuple[str, str], list[Any]] = defaultdict(list)
     for record in records:
         field = str(getattr(record, "field", ""))
         if field not in CORE_FIELDS:
             continue
-        supplier_dir = getattr(record, "supplier_dir", None)
+        supplier_dir = getattr(record, "supplier_dir", None) or document_groups.get(
+            str(getattr(record, "document_id", ""))
+        )
         scope = "project" if field in PROJECT_FIELDS else f"supplier:{supplier_dir or 'unassigned'}"
         grouped[(scope, field)].append(record)
     output: list[FieldDecision] = []

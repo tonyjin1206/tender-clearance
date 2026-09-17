@@ -33,6 +33,7 @@ from tc.models import (
     InventoryFile,
     ProjectConfig,
     QueryMode,
+    Supplier,
 )
 from tc.projio import EvidenceBuilder, ProjectError, ensure_output_dirs, load_project_config
 from tc.normalize import normalize_company_name
@@ -144,8 +145,39 @@ def run(
     try:
         cfg = load_project_config(project_dir)
         inventory = InventoryFile(**load_json(project_dir / "output/interim/inventory.json"))
-        entities = EntitiesFile(**load_json(project_dir / "output/interim/entities.json"))
-        ext = ExternalEvidenceFile(**load_json(project_dir / "output/interim/external.json"))
+        entities_path = project_dir / "output/interim/entities.json"
+        if entities_path.exists():
+            entities = EntitiesFile(**load_json(entities_path))
+        else:
+            identity_path = project_dir / "output/interim/identity-candidates.json"
+            if not identity_path.exists():
+                raise ProjectError("缺少 entities.json；请先导入身份快速 OCR 并运行 prepare_identity.py")
+            identity = load_json(identity_path)
+            provisional = []
+            for item in identity.get("candidates", []):
+                provisional.append(Supplier(
+                    supplier_id=str(item["supplier_id"]),
+                    directory_name=str(item.get("supplier_dir") or item["normalized_name"]),
+                    display_name=str(item["display_name"]),
+                    declared_name=str(item["display_name"]),
+                    normalized_name=str(item.get("normalized_name") or ""),
+                    name_search_key=str(item.get("normalized_name") or "") or None,
+                    uscc=item.get("uscc"),
+                    uscc_status="present_valid" if item.get("uscc") else "absent",
+                    uscc_candidates=list(item.get("uscc_candidates") or []),
+                    confirmation="candidate",
+                    confirmation_note="身份快速阶段候选；待全文主体阶段复核",
+                ))
+            if not provisional:
+                raise ProjectError("identity-candidates.json 尚未形成可查询的供应商名称")
+            entities = EntitiesFile(
+                run=inventory.run, suppliers=provisional, parties=[], contacts=[],
+                notes=["本次外部查询使用身份快速阶段候选，待全文主体阶段复核"],
+            )
+        ext_path = project_dir / "output/interim/external.json"
+        ext = ExternalEvidenceFile(**load_json(ext_path)) if ext_path.exists() else ExternalEvidenceFile(
+            run=inventory.run, queries=[], records=[], ownership=[]
+        )
     except (ProjectError, FileNotFoundError) as exc:
         typer.secho(f"[错误] {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
@@ -168,12 +200,64 @@ def run(
             queries[key] = q
     prior_queries = dict(queries)
 
+    checkpoint_path = interim / "srm-query-checkpoint.json"
+    checkpoint: dict[str, object] = {
+        "schema_version": "tender-clearance.srm-query-checkpoint.v1",
+        "run_id": inventory.run.run_id,
+        "completed": {},
+        "last_supplier_id": None,
+    }
+    if checkpoint_path.exists():
+        try:
+            saved = load_json(checkpoint_path)
+            if saved.get("run_id") == inventory.run.run_id:
+                checkpoint.update(saved)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def persist_partial_snapshot() -> None:
+        """每个主体/渠道完成后原子保存，进程中断也不丢已取得结果。"""
+        refreshed_records = [
+            r for r in ext.records
+            if (r.source_id, r.supplier_id or "") not in refreshed_keys
+            and not (set(r.evidence_ids) & replaced_evidence_ids)
+        ]
+        record_map = {r.record_id: r for r in [*refreshed_records, *adapter_records]}
+        merged = ExternalEvidenceFile(
+            run=inventory.run,
+            queries=sorted(queries.values(), key=lambda q: (q.source_id, q.subject_supplier_id or "", q.query_id)),
+            records=list(record_map.values()),
+            ownership=ext.ownership,
+        )
+        write_json(interim / "external.json", merged.model_dump(mode="json"))
+        evidence_map = {
+            evidence.evidence_id: evidence
+            for evidence in prior_query_evidence
+            if evidence.evidence_id not in replaced_evidence_ids
+        }
+        evidence_map.update({evidence.evidence_id: evidence for evidence in builder.items})
+        write_json(
+            interim / "evidence-external-queries.json",
+            EvidenceFile(run=inventory.run, evidence=list(evidence_map.values())).model_dump(mode="json"),
+        )
+
+    def record_checkpoint(supplier_id: str, status: str) -> None:
+        checkpoint["last_supplier_id"] = supplier_id
+        completed = checkpoint.setdefault("completed", {})
+        if status in {"match", "no_result", "no_match_verified"}:
+            completed[supplier_id] = status  # type: ignore[index]
+        write_json(checkpoint_path, checkpoint)
+
     source_configs = load_source_config(config_path)
     live_sources = list(cfg.external_query_sources) if cfg.external_query_mode == "live" else []
     live_source_set = set(live_sources)
 
     runtime_credentials: dict[str, tuple[str, str]] = {}
-    manual_browser_login = os.environ.get("SRM_BROWSER_MANUAL_LOGIN", "") == "1"
+    # 人工可见浏览器是默认路径；只有明确指定 runtime 才读取 SRM_USER/
+    # SRM_PASSWORD，避免把密码问题带入用户交互流程。
+    manual_browser_login = os.environ.get("SRM_BROWSER_LOGIN_MODE", "manual").strip().lower() != "runtime"
+    if os.environ.get("SRM_BROWSER_MANUAL_LOGIN", "") == "1":
+        manual_browser_login = True
     if "srm" in live_sources and not manual_browser_login:
         try:
             runtime_credentials["srm"] = _collect_srm_credentials(allow_interactive=interactive)
@@ -186,6 +270,7 @@ def run(
         adapters = build_adapters({sid: source_configs.get(sid, SourceConfig(source_id=sid, label=sid))
                                    for sid in live_sources},
                                   runtime_credentials=runtime_credentials,
+                                  login_modes={"srm": "manual" if manual_browser_login else "runtime"},
                                   status_callbacks=(
                                       {"srm": _srm_cli_status_callback}
                                       if manual_browser_login else {}
@@ -249,6 +334,7 @@ def run(
                 else:
                     queries[key] = _placeholder_query(sid, subject, "not_queried",
                                                       f"external_query_mode={cfg.external_query_mode}，未发起查询", now)
+                persist_partial_snapshot()
             elif max_total_seconds and time.perf_counter() - query_started >= max_total_seconds:
                 # 预算耗尽表示“本次未启动”，不能抹掉此前已有的 blocked/match
                 # 结果及其记录；只有没有历史结果的主体才新增 not_queried 占位。
@@ -257,6 +343,7 @@ def run(
                         sid, subject, "not_queried",
                         f"本次实时外部查询已达到 {max_total_seconds}s 总预算，未启动此查询", now,
                     )
+                    persist_partial_snapshot()
                 query_timings.append({
                     "source_id": sid,
                     "supplier_id": supplier.supplier_id,
@@ -271,6 +358,7 @@ def run(
                 queries[key] = _placeholder_query(
                     sid, subject, "needs_manual_review",
                     "缺少企业名称和统一社会信用代码，无法发起 SRM 查询；需人工确认主体", now)
+                persist_partial_snapshot()
             else:
                 refreshed_keys.add(key)
                 if key in prior_queries:
@@ -283,6 +371,8 @@ def run(
                                    version=getattr(adapter, "version", ADAPTER_VERSION_TAG))
                 queries[key] = q
                 adapter_records.extend(_record_from_adapter(q, result, subject, entities, sid))
+                record_checkpoint(supplier.supplier_id, result.status) if sid == "srm" else None
+                persist_partial_snapshot()
                 query_timings.append({
                     "source_id": sid,
                     "supplier_id": supplier.supplier_id,

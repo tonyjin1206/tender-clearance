@@ -1,3 +1,3 @@
 """tender-clearance 共享库（数据模型、规范化、证据与项目 IO）。"""
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"

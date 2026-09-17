@@ -14,12 +14,12 @@ def test_intake_plan_needs_no_project_config_or_document_reading():
     assert [q["id"] for q in plan["questions"]] == [
         "bid_deadline",
         "public_web_authorization",
-        "srm_credentials",
+        "srm_login",
         "sensitive_display",
         "tender_template",
     ]
     assert "do_not_parse_or_extract_uploaded_documents" in plan["before_answers"]
-    assert plan["questions"][2]["runtime_only"] is True
+    assert plan["questions"][2]["mode"] == "manual_visible_browser"
 
 
 def test_preflight_is_read_only_and_classifies_technical_bids(alpha_project):

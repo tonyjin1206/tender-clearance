@@ -387,11 +387,13 @@ class SrmAdapter:
         client: Any = None,
         credentials: tuple[str, str] | None = None,
         status_callback: Callable[[Any], None] | None = None,
+        login_mode: str | None = None,
     ) -> None:
         self.config = config
         self._client = client
         self._runtime_credentials = credentials
         self._status_callback = status_callback
+        self._login_mode = login_mode
 
     def _get_client(self):
         if self._client is None:
@@ -401,9 +403,13 @@ class SrmAdapter:
 
             # SRM 默认走真实浏览器会话，固定从主页“查企业”读取可见信息；
             # 仅显式设置 SRM_BROWSER_DRIVER=api/http 才回退到旧 HTTP/token 通道。
-            # 默认无头后台运行；SRM_BROWSER_HEADED=1 为验证码接管模式。
-            # SRM_BROWSER_MANUAL_LOGIN=1 时开启可见浏览器人工登录，不读取或填充凭据。
-            manual_login = os.environ.get("SRM_BROWSER_MANUAL_LOGIN", "") == "1"
+            # 默认开启可见浏览器人工登录；运行时凭据仅作为明确的兼容模式，
+            # 通过 SRM_BROWSER_LOGIN_MODE=runtime 显式选择，避免用户误以为
+            # 需要在对话中提交密码。
+            login_mode = (self._login_mode or os.environ.get("SRM_BROWSER_LOGIN_MODE", "runtime")).strip().lower()
+            if os.environ.get("SRM_BROWSER_MANUAL_LOGIN", "") == "1":
+                login_mode = "manual"
+            manual_login = login_mode != "runtime"
             if os.environ.get("SRM_BROWSER_DRIVER", "playwright").lower() == "playwright":
                 # 宿主已经注入的驱动（桌面浏览器桥接、测试替身等）优先；
                 # 只有没有注册驱动时才自动装配本地 Playwright，避免覆盖注入状态。
@@ -500,6 +506,7 @@ def build_adapters(
     transport_factory: Callable[[SourceConfig], HttpTransport | None] | None = None,
     runtime_credentials: dict[str, tuple[str, str]] | None = None,
     status_callbacks: dict[str, Callable[[Any], None]] | None = None,
+    login_modes: dict[str, str] | None = None,
 ) -> dict[str, SourceAdapter]:
     out: dict[str, SourceAdapter] = {}
     for sid, cfg in configs.items():
@@ -508,6 +515,7 @@ def build_adapters(
                 cfg,
                 credentials=(runtime_credentials or {}).get(sid),
                 status_callback=(status_callbacks or {}).get(sid),
+                login_mode=(login_modes or {}).get(sid),
             )
         else:
             transport = transport_factory(cfg) if transport_factory else None

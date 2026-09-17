@@ -1,4 +1,4 @@
-# tender-clearance（投标清标 Skill）
+# tender-clearance（投标清标 Skill，v0.4.0）
 
 接收同一采购项目的多家供应商标书及经授权取得的企业风险资料，完成标书目录识别、
 信息提取与来源定位、主体交叉检查、文件属性与扫描线索比对、公开/授权外部证据
@@ -53,7 +53,7 @@ tender_template_path: procurement/空白招标文件模板.docx
 ## 上传后的首轮确认
 
 文件一上传，先确认而不是先长时间执行：评标/投标截止时间、是否授权本次中国政府采购网
-公开查询、是否授权 SRM 登录（凭据仅当次运行时提供）以及身份证号/手机号是否明文显示。
+公开查询、是否授权 SRM 登录（授权后打开可见浏览器，用户在窗口内人工登录，不在对话中收集密码）以及身份证号/手机号是否明文显示。
 可先输出不读取业务文件的确认清单：
 
 ```bash
@@ -89,12 +89,15 @@ $PY scripts/run_pipeline.py    $P --profile report --offline-draft
 或阶段失败后使用 `--resume`，不要从头重跑；`--from-stage`/`--to-stage` 可做明确的局部运行。
 live 查询默认复用同一运行、同一主体、同一适配器的成功结果，只有 `--refresh-queries` 才强制刷新。
 
-宿主 OCR 完成 `output/interim/ocr-jobs.json` 对应任务后，显式执行
+宿主 OCR 应先处理 `ocr-jobs.json` 中 `priority=identity_fast` 的封面/商务身份页；导入这批结果后可执行
+`$PY scripts/prepare_identity.py $P`，生成 `output/interim/identity-candidates.json`，据此提前启动 SRM 查询，随后继续处理 `priority=full` 的全文任务。宿主 OCR 完成 `output/interim/ocr-jobs.json` 对应任务后，显式执行
 `$PY scripts/import_ocr_results.py $P --input <ocr-results.json>`，再重跑匹配、规则和报告。
+若全文主体阶段尚未完成，`query_sources.py` 可消费 `identity-candidates.json` 作为临时主体；
+全文主体阶段完成后会按规范化公司名称复用主体 ID，避免已取得的 SRM 结果重复查询或丢失。
 平铺上传还需执行 `$PY scripts/resolve_supplier_groups.py $P`；若状态为
 `needs_manual_review`，先补 OCR 或提供带理由的 `supplier-group-confirmations.json`，再继续。
-正式报告必须先取得用户本次提供的 SRM 用户名和密码，登录后按公司名称 + 统一社会信用代码
-查询；登录成功但没有匹配信息可以生成报告并标记 `no_result`，登录失败、受阻或未查询不能生成。
+正式报告必须完成本次 SRM 浏览器登录，登录后按准确公司名称查询，并用统一社会信用代码作二次核验；
+登录成功但没有匹配信息可以生成报告并标记 `no_result`，登录失败、受阻或未查询不能生成。
 外部导入阶段是增量合并：同一运行中重跑不会清空已完成的 live 结果；新运行会重新建立当前运行的查询边界。
 个别供应商失败时可用 `query_sources.py $P --supplier-id SUP-2` 定向重试，避免重新查询
 全部供应商；实时记录按 `record_id` 去重。
@@ -112,7 +115,7 @@ live 查询默认复用同一运行、同一主体、同一适配器的成功结
 | P2 报告与审阅 | ✅ | Markdown/PDF/DOCX、证据索引、复核清单、脱敏检查（含 PDF 文本层） |
 | P3 外部证据导入 | ✅ | JSON/CSV/快照导入、查询状态、覆盖矩阵 |
 | P4 合法外部查询适配器 | ✅ 政采网已实测启用 | 渠道范围（2026-09-09 决策）：外部仅保留中国政府采购网（公开查询表单自动化），信用中国/军采/工商/司法已移除；适配器 + 可注入传输层，状态机全覆盖 |
-| P5 富奥 SRM 接入 | ✅ 查询入口已改造，待真实页面复核 | 登录→主页“查企业”→搜索框唯一命中→企业详情/画像→身份核对→三类页面结构化提取；默认同一运行复用会话；`SRM_BROWSER_MANUAL_LOGIN=1` 打开独立可见浏览器并由人工完成登录，状态会提示等待、成功、关闭、重开和超时；`SRM_BROWSER_HEADED=1` 为凭据模式下的验证码人工接管；驱动 `scripts/tc/srm_playwright_driver.py`，自测 `scripts/srm_browser_selftest.py` |
+| P5 富奥 SRM 接入 | ✅ 查询入口已改造，待真实页面复核 | 登录→主页“查企业”→准确公司名称查询→唯一命中→企业详情/画像→身份核对→三类页面结构化提取；默认可见浏览器人工登录并复用会话；状态会提示等待、成功、关闭、重开和超时；`SRM_BROWSER_LOGIN_MODE=runtime` 仅作为显式兼容模式；驱动 `scripts/tc/srm_playwright_driver.py`，自测 `scripts/srm_browser_selftest.py` |
 
 渠道范围（2026-09-09 决策）：外部仅保留**中国政府采购网**（失信名单查询已自动化，
 不需要账号密码），内部仅保留**富奥 SRM**；其余渠道已移除

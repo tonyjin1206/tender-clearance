@@ -253,22 +253,25 @@ def run_all(
 
     srm_env: dict[str, str] | None = None
     if require_srm and any(script == "query_sources.py" for script, _ in stages):
-        # 只有本次选中的阶段实际访问 SRM 时才要求凭据；局部规则/渲染续跑不应被无关门禁阻断。
-        username, password = srm_credentials or (
-            os.environ.get("SRM_USER", "").strip(), os.environ.get("SRM_PASSWORD", "")
-        )
-        if not username or not password:
-            raise ProjectError(
-                "SRM 凭据必须在查询阶段启动前提供；请先完成交互确认，再通过参数或"
-                " SRM_USER/SRM_PASSWORD 注入，流水线不会中途询问"
-            )
-        # 仅把凭据传给需要它的查询子进程；本地解析、规则和渲染阶段不继承。
+        # 默认是可见浏览器人工登录；只有显式提供 srm_credentials 或设置
+        # SRM_BROWSER_LOGIN_MODE=runtime 才进入兼容的运行时凭据模式。
         srm_env = os.environ.copy()
-        srm_env.update({
-            "SRM_USER": username,
-            "SRM_PASSWORD": password,
-            "SRM_BROWSER_DRIVER": os.environ.get("SRM_BROWSER_DRIVER", "playwright"),
-        })
+        srm_env["SRM_BROWSER_DRIVER"] = os.environ.get("SRM_BROWSER_DRIVER", "playwright")
+        if srm_credentials:
+            username, password = srm_credentials
+            srm_env.update({
+                "SRM_BROWSER_LOGIN_MODE": "runtime",
+                "SRM_USER": username,
+                "SRM_PASSWORD": password,
+            })
+        elif os.environ.get("SRM_BROWSER_LOGIN_MODE", "manual").strip().lower() == "runtime":
+            username = os.environ.get("SRM_USER", "").strip()
+            password = os.environ.get("SRM_PASSWORD", "")
+            if not username or not password:
+                raise ProjectError(
+                    "已明确选择 SRM_BROWSER_LOGIN_MODE=runtime，但未提供运行时凭据；"
+                    "如使用人工浏览器登录，请移除该环境变量"
+                )
 
     started = time.perf_counter()
     timings: list[StageTiming] = []

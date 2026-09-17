@@ -77,6 +77,17 @@ def run(
 
     grouping_path = project_dir / "output/interim/supplier-grouping.json"
     grouping = load_json(grouping_path) if grouping_path.exists() else None
+    identity_ids: dict[str, str] = {}
+    identity_path = project_dir / "output/interim/identity-candidates.json"
+    if identity_path.exists():
+        try:
+            identity_ids = {
+                str(item.get("normalized_name")): str(item["supplier_id"])
+                for item in load_json(identity_path).get("candidates", [])
+                if item.get("normalized_name") and item.get("supplier_id")
+            }
+        except (OSError, ValueError, TypeError):
+            identity_ids = {}
     if grouping and grouping.get("status") == "resolved":
         supplier_dirs = [g["group_id"] for g in grouping.get("groups", [])]
         supplier_labels = {g["group_id"]: g["supplier_name"] for g in grouping.get("groups", [])}
@@ -92,10 +103,11 @@ def run(
         document_groups = {}
     suppliers: dict[str, Supplier] = {}
     for i, d in enumerate(supplier_dirs, start=1):
+        display_name = supplier_labels.get(d, cfg.supplier_directory_mapping.get(d, d))
         suppliers[d] = Supplier(
-            supplier_id=f"SUP-{i}",
+            supplier_id=identity_ids.get(normalize_company_name(display_name), f"SUP-{i}"),
             directory_name=d,
-            display_name=supplier_labels.get(d, cfg.supplier_directory_mapping.get(d, d)),
+            display_name=display_name,
         )
 
     parties: list[Party] = []

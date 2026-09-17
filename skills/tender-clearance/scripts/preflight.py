@@ -42,7 +42,7 @@ OPTIONAL_MODULES = {
 
 
 # 这个清单刻意不包含用户的实际密码。宿主在文件上传后应立即显示它，
-# 只把用户选择写入 project.yaml；SRM 凭据仅在随后启动流水线时以运行时环境注入。
+# 只把用户选择写入 project.yaml；SRM 登录由随后打开的可见浏览器承接。
 UPFRONT_QUESTIONS = [
     {
         "id": "bid_deadline",
@@ -60,10 +60,10 @@ UPFRONT_QUESTIONS = [
         },
     },
     {
-        "id": "srm_credentials",
-        "prompt": "是否授权本次 SRM 登录查询？如授权，请仅通过当前会话的安全输入或 SRM_USER/SRM_PASSWORD 运行时环境提供账号和密码；绝不写入 project.yaml、日志或报告。不授权时只能生成离线草稿，不能通过正式报告门禁。",
+        "id": "srm_login",
+        "prompt": "是否授权本次 SRM 查询？如授权，流程开始时将打开可见浏览器，请在窗口内人工完成登录；对话不收集密码。不授权时只能生成离线草稿，不能通过正式报告门禁。",
         "required": True,
-        "runtime_only": True,
+        "mode": "manual_visible_browser",
         "project_yaml_effect": {"authorized": {"external_query_mode": "live", "append_source": "srm"}},
     },
     {
@@ -171,17 +171,15 @@ def build_plan(project_dir: Path, profile: str) -> dict:
     ]
     if live_srm:
         questions.append({
-            "id": "srm_credentials",
-            "prompt": "是否授权本次 SRM 登录查询，并在流水线启动前提供凭据",
+            "id": "srm_login",
+            "prompt": "是否授权本次 SRM 查询？运行时将打开可见浏览器，请在窗口内人工完成登录；对话不收集密码。",
             "required": True,
-            "ready_from_environment": credentials_ready,
+            "mode": "manual_visible_browser",
         })
 
     blocking = []
     if missing:
         blocking.append("environment_install_confirmation")
-    if live_srm and not credentials_ready:
-        blocking.append("srm_credentials_before_run")
     return {
         "status": "needs_confirmation" if questions else "ready",
         "project": {
@@ -209,6 +207,7 @@ def build_plan(project_dir: Path, profile: str) -> dict:
             "required_packages": required,
             "missing_packages": missing,
             "srm_credentials_present": credentials_ready,
+            "srm_login_mode": "manual_visible_browser",
         },
         "questions": questions,
         "blocking": blocking,

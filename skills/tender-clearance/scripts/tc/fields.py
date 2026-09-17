@@ -112,6 +112,66 @@ _PURE_VALUE_RES: list[tuple[re.Pattern[str], str]] = [
 
 _NAME_CHARS = re.compile(r"^[一-龥·A-Za-z]{2,8}$")
 
+_PROJECT_NOISE = (
+    "委托方", "甲方", "乙方", "单价", "总价", "数量", "单位：", "单位:",
+    "投标保证金", "法定代表人", "授权代表", "身份证", "联系人",
+)
+
+
+def _plausible_project_name(value: str) -> bool:
+    value = re.sub(r"\s+", "", str(value or "")).strip("：:，,；;。 ")
+    if len(value) < 8 or len(value) > 120:
+        return False
+    if any(marker in value for marker in _PROJECT_NOISE):
+        return False
+    return any(marker in value for marker in ("项目", "招标", "采购", "工程", "服务", "货物"))
+
+
+def _plausible_tenderer(value: str) -> bool:
+    value = re.sub(r"\s+", "", str(value or "")).strip("：:，,；;。 ")
+    return bool(value and len(value) <= 80 and re.search(r"(?:公司|厂|中心|单位)$", value))
+
+
+def _cover_title_hits(clean: list[dict[str, Any]], page_conf: float) -> list[FieldHit]:
+    """从封面顶部标题恢复未带标签的招标人和项目名称。"""
+    full_text = "\n".join(str(block.get("text", "")) for block in clean)
+    if "投标文件" not in full_text and "投标书" not in full_text:
+        return []
+
+    def top(block: dict[str, Any]) -> float:
+        return float((block.get("bbox") or {}).get("y", 1.0))
+
+    top_blocks = [
+        block for block in sorted(clean, key=top)
+        if top(block) <= 0.38 and str(block.get("text", "")).strip()
+        and "项目编号" not in str(block.get("text", ""))
+    ]
+    hits: list[FieldHit] = []
+    if top_blocks:
+        first = str(top_blocks[0].get("text", "")).strip()
+        if _plausible_tenderer(first):
+            hits.append(FieldHit(
+                "tenderer", first, context="OCR 封面顶部标题", confidence=min(
+                    float(top_blocks[0].get("confidence", page_conf)), page_conf
+                ), via_label=False, label_relation="cover_title",
+            ))
+    for index, left in enumerate(top_blocks):
+        combined = str(left.get("text", "")).strip()
+        for right in top_blocks[index + 1:index + 3]:
+            if top(right) - top(left) > 0.10:
+                break
+            combined += str(right.get("text", "")).strip()
+            if _plausible_project_name(combined):
+                hits.append(FieldHit(
+                    "project_name", combined, context="OCR 封面标题上下行合并",
+                    confidence=min(
+                        float(left.get("confidence", page_conf)),
+                        float(right.get("confidence", page_conf)), page_conf,
+                    ), via_label=False, label_relation="cover_title_join",
+                ))
+                return hits
+    return hits
+
 # 人名提取的强排除：label 后紧跟的不是姓名（正文延续、动作词、标点起头等）
 _NAME_FORBIDDEN_FIRST = set("在的了与及或并但为，。；：、（)0123456789")
 _NAME_STOPWORDS = {
@@ -166,7 +226,12 @@ def scan_inline(text: str) -> list[FieldHit]:
     def add(field: str, value: str, context: str, via: bool, conf: float = 1.0,
             span: tuple[int, int] | None = None, occupy: bool = False,
             label: str | None = None, label_relation: str | None = None) -> None:
-        key = (field, value.strip())
+        value = value.strip()
+        if field == "project_name" and not _plausible_project_name(value):
+            return
+        if field == "tenderer" and not _plausible_tenderer(value):
+            return
+        key = (field, value)
         if key in seen_values:
             return
         seen_values.add(key)
@@ -360,6 +425,12 @@ def scan_ocr_blocks(
         if (hit.field, hit.value) not in seen:
             hits.append(hit)
             seen.add((hit.field, hit.value))
+    existing_fields = {hit.field for hit in hits}
+    for title_hit in _cover_title_hits(clean, page_conf):
+        if title_hit.field in existing_fields:
+            continue
+        hits.append(title_hit)
+        existing_fields.add(title_hit.field)
     return hits
 
 
@@ -492,7 +563,11 @@ def _coerce_label_value(field: str, value: str) -> FieldHit | None:
         return FieldHit(field, value, via_label=True) if _plausible_name(value) else None
     if field == "company_name" and not _COMPANY_RE.search(value):
         return None
-    if field in {"project_name", "tenderer", "address", "bid_date", "project_code"}:
+    if field == "project_name" and _plausible_project_name(value):
+        return FieldHit(field, value, via_label=True)
+    if field == "tenderer" and _plausible_tenderer(value):
+        return FieldHit(field, value, via_label=True)
+    if field in {"address", "bid_date", "project_code"}:
         return FieldHit(field, value, via_label=True)
     return None
 

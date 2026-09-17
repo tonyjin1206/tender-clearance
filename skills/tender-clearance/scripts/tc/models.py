@@ -302,6 +302,7 @@ class OCRJob(_Strict):
     input_ref: str
     languages: list[str] = Field(default_factory=lambda: ["zh-Hans", "en"])
     mode: Literal["fast", "accurate"] = "accurate"
+    priority: Literal["identity_fast", "full"] = "full"
     purpose: str = "tender_clearance_field_candidates"
     privacy_requirement: Literal["local_only", "user_approved_cloud"] = "local_only"
 

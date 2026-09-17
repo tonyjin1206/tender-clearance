@@ -13,7 +13,8 @@ description: 对同一采购项目多家供应商标书做文件盘点、主体�
 - 用户上传标书并要求处理：第一条回复只一次性确认以下 4 项，确认前不读取、解析、安装或联网：
   1. 评标/投标截止时间（ISO 8601）；
   2. 是否授权访问中国政府采购网；
-  3. 是否授权本次 SRM 登录查询；授权时仅通过当前会话或 `SRM_USER`/`SRM_PASSWORD` 提供凭据；
+  3. 是否授权本次 SRM 登录查询；授权后由流程打开可见浏览器，用户在窗口内人工登录，
+     对话不收集密码；运行时凭据仅作为显式兼容模式；
   4. 身份证号/手机号明文显示还是脱敏。
 - 用户明确说“加载 skill”但未要求处理文件：只确认已加载，不启动流水线。
 
@@ -38,7 +39,7 @@ description: 对同一采购项目多家供应商标书做文件盘点、主体�
    $PY scripts/preflight.py $P --profile report
    ```
 
-   只安装预检列出的缺失依赖，并在流水线启动前准备好 SRM 凭据；不要中途 `input()`/`getpass()`，不要用 `sleep` 轮询。
+   只安装预检列出的缺失依赖；SRM 默认在流程前段打开可见浏览器，由用户人工登录；不要中途 `input()`/`getpass()`，不要用 `sleep` 轮询。
 
    预检会明确显示 Word 模板状态。未提供模板时继续通用 OCR 兜底；提供模板时应提示用户其可大幅提高指标识别准确度，并按预检结果准备 `python-docx`。
 
@@ -48,7 +49,7 @@ description: 对同一采购项目多家供应商标书做文件盘点、主体�
    $PY scripts/run_pipeline.py $P --profile report --live-query-timeout-seconds 300
    ```
 
-   主入口会按阶段输出简短状态、实时转发长阶段进度，并写入 `output/interim/performance.json` 和 `query-timings.json`。不要把每个阶段拆成独立模型回合，不要重复读取参考文档或完整 JSON；失败时先看这两个摘要文件。
+   主入口会按阶段输出简短状态、实时转发长阶段进度，并写入 `output/interim/performance.json` 和 `query-timings.json`。宿主 OCR 应优先处理 `priority=identity_fast` 的任务；导入后运行 `scripts/prepare_identity.py`，可在全文 OCR 继续时提前启动 SRM。不要把每个阶段拆成独立模型回合，不要重复读取参考文档或完整 JSON；失败时先看这两个摘要文件。
 
 3. 若因 OCR 或人工归组暂停，补齐材料后从断点继续：
 
@@ -67,11 +68,14 @@ description: 对同一采购项目多家供应商标书做文件盘点、主体�
    ```
 
    默认会复用同一主体、同一 live 适配器已有的 `match`、`no_match_verified` 或 `no_result`；不会复用导入记录、失败、阻断或主体待确认状态。
+   若全文主体阶段尚未完成，`query_sources.py` 可消费 `identity-candidates.json` 作为临时主体；
+   后续 `normalize_and_match.py` 会按规范化公司名称复用这些主体 ID。
 
 ## 阶段和输出
 
 - `inventory.py`：文件哈希、分类、读取异常；
 - `extract_documents.py`：文本/字段候选、元数据、OCR 任务；
+- `prepare_identity.py`：消费封面/商务身份页结果，生成可提前启动 SRM 的供应商身份候选；
 - `resolve_supplier_groups.py`：基于正文/OCR 证据归组；未 `resolved` 不进入正式报告；
 - `normalize_and_match.py` + `analyze_bid_data.py`：主体、人员、联系方式和文件属性交叉匹配；
 - `import_external_evidence.py` + `query_sources.py`：导入与授权 live 查询；导入阶段增量合并，不清空已有 live 结果；

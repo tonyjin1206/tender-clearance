@@ -49,6 +49,15 @@
           "title": "Mode",
           "type": "string"
         },
+        "priority": {
+          "default": "full",
+          "enum": [
+            "identity_fast",
+            "full"
+          ],
+          "title": "Priority",
+          "type": "string"
+        },
         "purpose": {
           "default": "tender_clearance_field_candidates",
           "title": "Purpose",
